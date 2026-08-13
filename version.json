@@ -1,5 +1,5 @@
 {
-  "version": "1.3.28",
-  "notes": "增加 Amazon 图片查看器 hiRes/large/mainUrl 高清地址解析。",
+  "version": "1.3.29",
+  "notes": "按 Amazon 图片 ID 去重，优先保留高清图片，避免同图导出 500/1500 两个版本。",
   "download": "https://github.com/guoq-prog/amazon-product-info-capture/raw/refs/heads/main/study/amazon_review_capture_extension.zip"
 }

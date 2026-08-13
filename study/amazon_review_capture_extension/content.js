@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.3.28';
+  const VERSION = '1.3.29';
   const UPDATE_URL = 'https://raw.githubusercontent.com/guoq-prog/amazon-product-info-capture/main/version.json';
   // 由 alipay.jpg 以 Python 灰度阈值提取的 41×41 二维码模块；不再依赖外部 JPG。
   const ALIPAY_QR_HEX = 'fed6ad733fc168ad3a506e898a734bb753c9afa5dbaeba7302ec1411d9cd07faaaaaaafe00ca947f00121da6e89dde7c61b55b88e92219c59f22d37b4364e40baf5a4f8a0ce8f501ba156a0496b8f3982d6006a0b26c9094c700561acbada021126633900532ba7e900057a9a30400275e88cc013c147266010070fa0c7a4fe33205ef108226ed5d21b0208b7d929f3f38a6c86610611b30dea619226f601a6119854c909e2ba952fa807e6047c47f948ad2ab504c795f514ba4e8fe2f85d6822f534ae9c044843304f0deab6afe579b25db0';
@@ -82,6 +82,23 @@
     return [...new Set(items.filter(Boolean))];
   }
 
+  function imageKey(url) {
+    try {
+      const pathname = decodeURIComponent(new URL(url).pathname);
+      return pathname.match(/\/images\/(?:I|G)\/([^./]+)/i)?.[1] || pathname;
+    } catch (_) { return url; }
+  }
+
+  function dedupeImageUrls(urls) {
+    const selected = new Map();
+    const score = url => (/\._[^.]+_|\.(?:SL|SX|SY|AC|CR|US|SS)\d+_/i.test(url) ? 0 : 10) + (/hires|large|zoom/i.test(url) ? 5 : 0);
+    for (const url of urls.filter(Boolean)) {
+      const key = imageKey(url); const current = selected.get(key);
+      if (!current || score(url) > score(current)) selected.set(key, url);
+    }
+    return [...selected.values()];
+  }
+
   function highestQualityUrl(url) {
     // Amazon 图片 URL 中的尺寸指令会生成缩略图；去除所有尺寸/裁剪指令，回到原图路径。
     return String(url || '').replace(/\._[^.\/]*_(?=\.)/gi, '').replace(/\.(?:SL|SX|SY|AC|CR|US|SS)\d+_/gi, '');
@@ -120,7 +137,7 @@
       ...gallery.flatMap(image => imageUrlsFromDynamicImage(image.getAttribute('data-a-dynamic-image'))),
       ...gallery.map(image => highestQualityUrl(image.getAttribute('data-old-hires') || image.currentSrc || image.src))
     ]);
-    const productImages = urls.filter(url => !/play-button|video|sprite/i.test(url));
+    const productImages = dedupeImageUrls(urls.filter(url => !/play-button|video|sprite/i.test(url)));
     return { mainImageUrl: productImages[0] || '', imageUrls: productImages, imageCount: productImages.length };
   }
 
@@ -131,7 +148,7 @@
       ...imageUrlsFromDynamicImage(image.getAttribute('data-a-dynamic-image')),
       highestQualityUrl(image.currentSrc || image.getAttribute('data-src') || image.src)
     ]);
-    return unique(urls).filter(url => !/sprite|play-button|video/i.test(url));
+    return dedupeImageUrls(urls.filter(url => !/sprite|play-button|video/i.test(url)));
   }
 
   function extractParentAsin() {
