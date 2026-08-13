@@ -1,5 +1,5 @@
 {
-  "version": "1.4.03",
-  "notes": "页面加载后主动触发采集，并自动纠正队列页面，降低后台标签页停滞概率。",
+  "version": "1.4.04",
+  "notes": "修复队列等待目标 ASIN 时不跳转的问题；检测到页面与队列不一致会自动跳转到目标 ASIN。",
   "download": "https://github.com/guoq-prog/amazon-product-info-capture/raw/refs/heads/main/study/amazon_review_capture_extension.zip"
 }

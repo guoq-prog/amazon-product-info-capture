@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.4.03';
+  const VERSION = '1.4.04';
   const UPDATE_URL = 'https://raw.githubusercontent.com/guoq-prog/amazon-product-info-capture/main/version.json';
   // 由 alipay.jpg 以 Python 灰度阈值提取的 41×41 二维码模块；不再依赖外部 JPG。
   const ALIPAY_QR_HEX = 'fed6ad733fc168ad3a506e898a734bb753c9afa5dbaeba7302ec1411d9cd07faaaaaaafe00ca947f00121da6e89dde7c61b55b88e92219c59f22d37b4364e40baf5a4f8a0ce8f501ba156a0496b8f3982d6006a0b26c9094c700561acbada021126633900532ba7e900057a9a30400275e88cc013c147266010070fa0c7a4fe33205ef108226ed5d21b0208b7d929f3f38a6c86610611b30dea619226f601a6119854c909e2ba952fa807e6047c47f948ad2ab504c795f514ba4e8fe2f85d6822f534ae9c044843304f0deab6afe579b25db0';
@@ -310,6 +310,13 @@
     if (!record) return updatePanel('当前页面不是商品详情页');
     const isQueuedRecord = batchQueue.active && batchQueue.items[batchQueue.index] === record.asin;
     if (batchQueue.active && !isQueuedRecord) {
+      const expected = batchQueue.items[batchQueue.index];
+      if (expected && !batchQueue.navigating) {
+        batchQueue.navigating = true;
+        await chrome.storage.local.set({ [BATCH_KEY]: batchQueue });
+        location.replace(batchProductUrl(expected));
+        return false;
+      }
       updatePanel(`队列等待目标 ASIN：${batchQueue.items[batchQueue.index] || '已完成'}`);
       return false;
     }
@@ -443,7 +450,7 @@
       <button class="arc-nav arc-nav-secondary" data-action="toggle-section" data-target="help"><span>使用帮助</span><small>采集异常与字段说明</small><b>›</b></button>
       <section class="arc-panel-section arc-info" data-section="help" ${activeSection === 'help' ? '' : 'hidden'}><p>面板只在商品详情页显示。验证码、登录提示或 Cookie 页面无法读取。评分数量是 Amazon 显示的总评分数，可能包含未写文字的评分。</p></section>
       <button class="arc-nav arc-nav-secondary" data-action="toggle-section" data-target="changelog"><span>更新版本记录</span><small>当前 v${VERSION}</small><b>›</b></button>
-      <section class="arc-panel-section arc-info" data-section="changelog" ${activeSection === 'changelog' ? '' : 'hidden'}><p><b>当前版本 v${VERSION}</b></p><button data-action="check-update">检查更新</button><p>v1.4.03：页面加载后主动触发采集，并自动纠正队列页面，降低后台标签页停滞概率。</p><p>v1.4.02：修复后台队列遇到页面不同步时无提示停止，并延长批量页面等待时间。</p><p>v1.4.01：无星级商品也会保存信息并继续批量队列。</p></section>
+      <section class="arc-panel-section arc-info" data-section="changelog" ${activeSection === 'changelog' ? '' : 'hidden'}><p><b>当前版本 v${VERSION}</b></p><button data-action="check-update">检查更新</button><p>v1.4.04：检测到队列页面不一致时自动跳转到目标 ASIN。</p><p>v1.4.03：页面加载后主动触发采集，并自动纠正队列页面。</p><p>v1.4.02：延长批量页面等待时间并显示超时提示。</p></section>
       <button class="arc-nav arc-nav-secondary" data-action="toggle-section" data-target="support"><span>♡ 打赏 / 支持作者</span><small>自愿支持，不影响功能使用</small><b>›</b></button>
       <section class="arc-panel-section arc-info" data-section="support" ${activeSection === 'support' ? '' : 'hidden'}><p>感谢使用。本扩展所有功能均可免费使用。</p><p><b>作者联系方式</b><br><a href="mailto:qing_guo2000@outlook.com">qing_guo2000@outlook.com</a><br>有任何疑问或需求可以联系。</p><p><b>支付宝打赏</b><br><span class="arc-qr-hint">请使用支付宝扫一扫</span><canvas class="arc-alipay-qr" width="196" height="196" aria-label="支付宝收款二维码"></canvas></p></section>`;
     drawAlipayQr();
