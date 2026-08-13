@@ -1,5 +1,5 @@
 {
   "version": "1.3.25",
   "notes": "增加自定义导出文件名前缀，并说明浏览器下载路径设置。",
-  "download": "https://github.com/guoq-prog/amazon-product-info-capture/releases/latest"
+  "download": "https://github.com/guoq-prog/amazon-product-info-capture/raw/refs/heads/main/study/amazon_review_capture_extension.zip"
 }
