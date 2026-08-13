@@ -1,5 +1,5 @@
 {
-  "version": "1.3.27",
-  "notes": "修复图片导出使用缩略图规格的问题，优先导出 Amazon 页面公开的最高规格图片。",
+  "version": "1.3.28",
+  "notes": "增加 Amazon 图片查看器 hiRes/large/mainUrl 高清地址解析。",
   "download": "https://github.com/guoq-prog/amazon-product-info-capture/raw/refs/heads/main/study/amazon_review_capture_extension.zip"
 }

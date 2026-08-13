@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.3.27';
+  const VERSION = '1.3.28';
   const UPDATE_URL = 'https://raw.githubusercontent.com/guoq-prog/amazon-product-info-capture/main/version.json';
   // 由 alipay.jpg 以 Python 灰度阈值提取的 41×41 二维码模块；不再依赖外部 JPG。
   const ALIPAY_QR_HEX = 'fed6ad733fc168ad3a506e898a734bb753c9afa5dbaeba7302ec1411d9cd07faaaaaaafe00ca947f00121da6e89dde7c61b55b88e92219c59f22d37b4364e40baf5a4f8a0ce8f501ba156a0496b8f3982d6006a0b26c9094c700561acbada021126633900532ba7e900057a9a30400275e88cc013c147266010070fa0c7a4fe33205ef108226ed5d21b0208b7d929f3f38a6c86610611b30dea619226f601a6119854c909e2ba952fa807e6047c47f948ad2ab504c795f514ba4e8fe2f85d6822f534ae9c044843304f0deab6afe579b25db0';
@@ -97,10 +97,23 @@
     }
   }
 
+  function extractViewerImages(root = document) {
+    const urls = [];
+    const add = value => { if (!value) return; try { urls.push(highestQualityUrl(JSON.parse(`"${value}"`))); } catch (_) { urls.push(highestQualityUrl(value.replace(/\\u002F/g, '/').replace(/\\\//g, '/'))); } };
+    root.querySelectorAll('script').forEach(script => {
+      const source = script.textContent || '';
+      const matcher = /["'](?:hiRes|large|mainUrl|zoomUrl)["']\s*:\s*["']([^"']+)["']/gi;
+      let match;
+      while ((match = matcher.exec(source))) add(match[1]);
+    });
+    return unique(urls).filter(url => /m\.media-amazon\.com|images-amazon\.com/i.test(url));
+  }
+
   function extractImages() {
     const main = document.querySelector('#landingImage, #imgTagWrapperId img, #main-image-container img');
     const gallery = [...document.querySelectorAll('#altImages img, #imageBlockThumbs img, [data-csa-c-content-id="image-block"] img')];
     const urls = unique([
+      ...extractViewerImages(),
       ...imageUrlsFromDynamicImage(main?.getAttribute('data-a-dynamic-image')),
       highestQualityUrl(main?.getAttribute('data-old-hires')),
       highestQualityUrl(main?.currentSrc || main?.src),
