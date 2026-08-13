@@ -1,0 +1,774 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Amazon.de ASIN 快速访问</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 1000px; margin: 32px auto; padding: 0 16px; color: #222; }
+    h1 { font-size: 24px; }
+    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
+    label { display: flex; align-items: center; gap: 8px; }
+    select, textarea { font: inherit; padding: 7px; border: 1px solid #999; border-radius: 6px; }
+    textarea { width: 100%; box-sizing: border-box; margin: 8px 0 2px; }
+    button { padding: 9px 14px; cursor: pointer; border: 1px solid #c4cbd3; border-radius: 7px; background: #f5f7f9; transition: background .15s, border-color .15s, box-shadow .15s, transform .05s; }
+    button:hover { filter: brightness(.97); box-shadow: 0 2px 6px rgba(0,0,0,.12); }
+    button:active { transform: translateY(1px); }
+    .button-link { display: inline-block; padding: 9px 14px; color: #222; text-decoration: none; border: 1px solid #999; border-radius: 6px; background: #f5f5f5; font-size: 13.3333px; }
+    .button-link:hover { background: #e8e8e8; }
+    button.primary { background: #146eb4; color: white; border-color: #146eb4; }
+    button.action-open { background: #1769aa; color: #fff; border-color: #1769aa; box-shadow: 0 2px 5px rgba(23,105,170,.25); }
+    button.action-favorite { background: #fff4c2; color: #6d5200; border-color: #e1bd3e; }
+    button.action-copy { background: #edf7ee; color: #28632c; border-color: #9bcaa0; }
+    button.action-export { background: #efeafd; color: #55408b; border-color: #b8a9e2; }
+    button.action-danger { background: #fff1f0; color: #9d2424; border-color: #e2a6a2; }
+    button.action-info { background: #f1f3f5; color: #4f5965; border-color: #d1d7dd; }
+    button.action-download { background: #e9f3ff; color: #145a91; border-color: #9bc6e9; font-weight: 600; }
+    .hint { color: #666; font-size: 14px; }
+    ol { padding-left: 42px; }
+    li { margin: 7px 0; display: flex; align-items: center; gap: 8px; }
+    li.hidden { display: none; }
+    li.clicked { background: #fff2a8; }
+    a { color: #146eb4; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .favorite { padding: 3px 8px; font-size: 13px; }
+    .favorite.on { background: #ffd54f; border-color: #d49b00; }
+    code { background: #f1f1f1; padding: 2px 4px; border-radius: 3px; }
+    details { margin: 14px 0; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; background: #fafafa; }
+    details summary { cursor: pointer; color: #146eb4; }
+    #changelog h3 { margin: 14px 0 4px; font-size: 15px; }
+    #changelog ul { margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <script type="text/plain" id="embeddedCaptureScript">
+// ==UserScript==
+// @name         Amazon 评论星级与数量记录
+// @namespace    amazon-ops
+// @version      1.1.0
+// @description  自动记录 Amazon 商品的 ASIN、标题、星级、评论/评分数量和采集时间，并支持导出 CSV
+// @author       qing
+// @match        https://www.amazon.de/*
+// @match        https://www.amazon.com/*
+// @match        https://www.amazon.co.uk/*
+// @match        https://www.amazon.fr/*
+// @match        https://www.amazon.it/*
+// @match        https://www.amazon.es/*
+// @match        https://www.amazon.nl/*
+// @match        https://www.amazon.pl/*
+// @match        https://www.amazon.se/*
+// @match        https://www.amazon.ca/*
+// @match        https://www.amazon.com.au/*
+// @match        https://www.amazon.co.jp/*
+// @match        https://amazon.de/*
+// @match        https://amazon.com/*
+// @match        https://amazon.co.uk/*
+// @match        https://amazon.fr/*
+// @match        https://amazon.it/*
+// @match        https://amazon.es/*
+// @match        https://amazon.nl/*
+// @match        https://amazon.pl/*
+// @match        https://amazon.se/*
+// @match        https://amazon.ca/*
+// @match        https://amazon.com.au/*
+// @match        https://amazon.co.jp/*
+// @include      https://www.amazon.*/*
+// @include      https://amazon.*/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  const STORAGE_KEY = 'amazon-review-capture-records-v1';
+  const PANEL_ID = 'amazon-review-capture-panel';
+  const MAX_ATTEMPTS = 20;
+
+  function getRecords() {
+    const raw = typeof GM_getValue === 'function'
+      ? GM_getValue(STORAGE_KEY, '[]')
+      : localStorage.getItem(STORAGE_KEY) || '[]';
+    try {
+      const value = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return Array.isArray(value) ? value : [];
+    } catch (error) {
+      return [];
+    }
+  }
+
+  function saveRecords(records) {
+    const value = JSON.stringify(records);
+    if (typeof GM_setValue === 'function') GM_setValue(STORAGE_KEY, value);
+    else localStorage.setItem(STORAGE_KEY, value);
+  }
+
+  function marketplace() {
+    return location.hostname.replace(/^www\./, '');
+  }
+
+  function getAsin() {
+    const pathname = decodeURIComponent(location.pathname);
+    const match = pathname.match(/\/(?:dp|gp\/product|商品)\/([A-Z0-9]{10})(?:[/?]|$)/i);
+    if (match) return match[1].toUpperCase();
+    const canonical = document.querySelector('link[rel="canonical"]')?.href || '';
+    const canonicalMatch = canonical.match(/\/(?:dp|gp\/product|商品)\/([A-Z0-9]{10})/i);
+    return canonicalMatch ? canonicalMatch[1].toUpperCase() : '';
+  }
+
+  function cleanText(value) {
+    return (value || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function numberFromText(value) {
+    const text = cleanText(value).replace(/\u00a0/g, ' ');
+    const match = text.match(/[\d][\d.,\s']*/);
+    if (!match) return '';
+    return match[0].trim();
+  }
+
+  function extractRating() {
+    const element = document.querySelector('#acrPopover, [data-hook="rating-out-of-text"], #averageCustomerReviews .a-icon-alt');
+    const text = cleanText(element?.getAttribute('title') || element?.getAttribute('aria-label') || element?.textContent);
+    const match = text.match(/5\s*つ星のうち\s*(\d[\d.,]*)/i)
+      || text.match(/(\d[\d.,]*)\s*(?:out of|von|sur|su|de)\s*5/i)
+      || text.match(/\b(\d[\d.,]*)\b/);
+    return match ? match[1] : '';
+  }
+
+  function extractReviewCount() {
+    const element = document.querySelector('#acrCustomerReviewText, [data-hook="total-review-count"], #averageCustomerReviews a[href*="review"]');
+    return numberFromText(element?.textContent);
+  }
+
+  function extractJsonLd() {
+    const scripts = [...document.querySelectorAll('script[type="application/ld+json"]')];
+    for (const script of scripts) {
+      try {
+        const data = JSON.parse(script.textContent);
+        const graph = Array.isArray(data?.['@graph']) ? data['@graph'] : data?.['@graph'] ? [data['@graph']] : [];
+        const items = (Array.isArray(data) ? data : [data]).flatMap(item => [item, ...(Array.isArray(item?.['@graph']) ? item['@graph'] : [])]).concat(graph);
+        const product = items.find(item => item?.aggregateRating);
+        if (product?.aggregateRating) return product.aggregateRating;
+      } catch (error) {
+        // Amazon 页面有时包含不完整 JSON-LD，忽略后继续使用 DOM 读取。
+      }
+    }
+    return {};
+  }
+
+  function collect() {
+    const asin = getAsin();
+    if (!asin) return null;
+
+    const jsonRating = extractJsonLd();
+    const rating = extractRating() || cleanText(jsonRating.ratingValue);
+    const reviewCount = extractReviewCount() || numberFromText(jsonRating.reviewCount);
+    return {
+      asin,
+      marketplace: marketplace(),
+      title: cleanText(document.querySelector('#productTitle, h1[data-automation-id="title"]')?.textContent || document.title),
+      rating,
+      reviewCount,
+      url: location.href,
+      capturedAt: new Date().toISOString()
+    };
+  }
+
+  function upsert(record) {
+    const records = getRecords();
+    const index = records.findIndex(item => item.asin === record.asin && item.marketplace === record.marketplace);
+    if (index >= 0) {
+      // 页面部分加载时，保留上次已成功读到的星级和评分数量。
+      records[index] = {
+        ...records[index],
+        ...record,
+        rating: record.rating || records[index].rating,
+        reviewCount: record.reviewCount || records[index].reviewCount
+      };
+    }
+    else records.push(record);
+    saveRecords(records);
+    updatePanel();
+  }
+
+  function csvEscape(value) {
+    return `"${String(value ?? '').replace(/"/g, '""')}"`;
+  }
+
+  function downloadCsv() {
+    const records = getRecords();
+    if (!records.length) return alert('还没有采集记录');
+    const columns = ['asin', 'marketplace', 'title', 'rating', 'reviewCount', 'capturedAt', 'url'];
+    const csv = '\ufeff' + [columns.join(','), ...records.map(record => columns.map(key => csvEscape(record[key])).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `amazon_review_records_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  }
+
+  function createPanel() {
+    if (document.getElementById(PANEL_ID)) return;
+    const panel = document.createElement('div');
+    panel.id = PANEL_ID;
+    panel.innerHTML = `
+      <div class="arc-title">评论数据记录</div>
+      <div class="arc-status">正在读取商品数据…</div>
+      <div class="arc-buttons">
+        <button data-action="capture">重新读取</button>
+        <button data-action="export">导出 CSV</button>
+        <button data-action="clear">清空记录</button>
+      </div>
+      <div class="arc-count"></div>`;
+    const style = document.createElement('style');
+    style.textContent = `
+      #${PANEL_ID} { position: fixed; z-index: 2147483647; right: 16px; bottom: 16px; width: 270px; padding: 12px; color: #222; background: #fff; border: 1px solid #999; border-radius: 8px; box-shadow: 0 3px 14px rgba(0,0,0,.25); font: 14px Arial,sans-serif; }
+      #${PANEL_ID} .arc-title { margin-bottom: 8px; font-size: 16px; font-weight: bold; }
+      #${PANEL_ID} .arc-status { margin-bottom: 8px; line-height: 1.4; }
+      #${PANEL_ID} .arc-buttons { display: flex; flex-wrap: wrap; gap: 5px; }
+      #${PANEL_ID} button { padding: 5px 8px; cursor: pointer; border: 1px solid #999; border-radius: 4px; background: #f5f5f5; }
+      #${PANEL_ID} .arc-count { margin-top: 8px; color: #666; font-size: 12px; }
+    `;
+    document.head.appendChild(style);
+    document.body.appendChild(panel);
+    panel.addEventListener('click', event => {
+      const action = event.target.dataset.action;
+      if (action === 'capture') capture();
+      if (action === 'export') downloadCsv();
+      if (action === 'clear' && confirm('确定清空全部评论记录吗？')) {
+        saveRecords([]);
+        updatePanel();
+      }
+    });
+  }
+
+  function updatePanel(status) {
+    const panel = document.getElementById(PANEL_ID);
+    if (!panel) return;
+    const current = collect();
+    panel.querySelector('.arc-status').textContent = status || (current
+      ? `${current.asin}：${current.rating || '未读取星级'} 星，${current.reviewCount || '未读取评论数'}`
+      : '当前页面不是商品详情页');
+    panel.querySelector('.arc-count').textContent = `已保存 ${getRecords().length} 条商品记录`;
+  }
+
+  function capture() {
+    const record = collect();
+    if (!record) return updatePanel('当前页面不是商品详情页');
+    if (!record.rating && !record.reviewCount) {
+      updatePanel('未读取到星级或评分数量；请等待页面加载或检查验证码');
+      return false;
+    }
+    upsert(record);
+    updatePanel(`已记录：${record.asin}`);
+    return true;
+  }
+
+  function retryCapture() {
+    let attempts = 0;
+    const timer = setInterval(() => {
+      attempts += 1;
+      if (capture() || attempts >= MAX_ATTEMPTS) {
+        clearInterval(timer);
+        if (attempts >= MAX_ATTEMPTS) updatePanel();
+      }
+    }, 1000);
+  }
+
+  createPanel();
+  if (typeof GM_registerMenuCommand === 'function') {
+    GM_registerMenuCommand('导出 Amazon 评论记录 CSV', downloadCsv);
+    GM_registerMenuCommand('清空 Amazon 评论记录', () => {
+      if (confirm('确定清空全部评论记录吗？')) saveRecords([]);
+    });
+  }
+  retryCapture();
+})();
+
+  </script>
+  <h1>Amazon.de ASIN 快速访问</h1>
+  <div class="toolbar">
+    <label>国家站点：
+      <select id="marketplace">
+        <option value="de" selected>德国 Amazon.de</option>
+        <option value="com">美国 Amazon.com</option>
+        <option value="co.uk">英国 Amazon.co.uk</option>
+        <option value="fr">法国 Amazon.fr</option>
+        <option value="it">意大利 Amazon.it</option>
+        <option value="es">西班牙 Amazon.es</option>
+        <option value="nl">荷兰 Amazon.nl</option>
+        <option value="pl">波兰 Amazon.pl</option>
+        <option value="se">瑞典 Amazon.se</option>
+        <option value="ca">加拿大 Amazon.ca</option>
+        <option value="com.au">澳大利亚 Amazon.com.au</option>
+        <option value="co.jp">日本 Amazon.co.jp</option>
+      </select>
+    </label>
+  </div>
+  <textarea id="asinInput" rows="5" placeholder="粘贴 ASIN、亚马逊链接或混合文本；空格、回车、Tab、逗号、分号等均可分隔"></textarea>
+  <div class="toolbar">
+    <button class="primary" id="loadAsins">读取 ASIN</button>
+    <button id="clearInput">清空输入</button>
+  </div>
+  <p id="count"></p>
+  <div class="toolbar">
+    <button class="action-open" id="openAll">▶ 打开第一个未访问</button>
+    <button class="action-open" id="openNext">打开下一个未访问</button>
+    <button class="action-favorite" id="favoriteNext">★ 收藏当前并打开下一个</button>
+    <button class="action-copy" id="copyLinks">复制全部链接</button>
+    <button class="action-copy" id="copyFavorites">复制收藏 ASIN</button>
+    <button class="action-export" id="exportHistory">导出历史记录</button>
+    <button class="action-danger" id="clearHistory">清除访问记录</button>
+    <button class="action-info" id="toggleUnvisited">只显示未访问</button>
+    <button class="action-info" id="showChangelog">查看更新日志</button>
+    <button class="action-info" id="checkUpdate">检查插件更新</button>
+    <button class="action-info" id="showUsage">使用说明</button>
+    <button class="action-download" id="downloadExtensionZip">↓ 下载新版商品信息采集器</button>
+  </div>
+  <details id="usagePanel" hidden>
+    <summary>使用说明</summary>
+    <ol>
+      <li>准备 Chrome 或 Edge，打开扩展管理页并开启“开发者模式”。</li>
+      <li>点击上方“下载新版商品信息采集器”，下载扩展 ZIP。</li>
+      <li>解压 ZIP，在扩展管理页选择“加载已解压的扩展程序”，选择解压后的文件夹。</li>
+      <li>在本页面读取 ASIN，然后点击 ASIN 链接打开 Amazon 商品页。</li>
+      <li>商品页右下角出现“Amazon 商品信息采集器”面板后，扩展会自动读取商品信息。</li>
+      <li>在面板中按需导出 CSV、历史记录或图片 ZIP。</li>
+    </ol>
+    <p class="hint">如果没有看到面板：确认扩展已加载并启用，刷新商品页，并检查是否遇到验证码、登录或 Cookie 页面。</p>
+  </details>
+  <details id="changelogPanel" hidden>
+    <summary>Amazon ASIN Browser 更新日志</summary>
+    <div id="changelog"></div>
+  </details>
+  <p class="hint">纯键盘流程：按 <code>Enter</code> / <code>→</code> 打开下一个；看完后按 <code>Ctrl+Tab</code> 回到本页；按 <code>F</code> 收藏并继续，按 <code>N</code> 跳过并继续。</p>
+  <ol id="links"></ol>
+
+  <script>
+    const defaultAsinText = `
+B0DHZQKPN8
+B0DHZQC4PT
+B0D8KWXFZD
+B0D8L4FK68
+B0D8L4ZR2H
+B0D8L5JL84
+B0D8L9YSJT
+B0D8L4DKSV
+B0D8L8QTSH
+B0D8L62P35
+B0D8L3MB8V
+B0D8L796ZH
+B0D8KD5H6Q
+B0D8L3X63S
+B0D8L5R7N8
+B0D8L7JM35
+B0D8L2ZS3X
+B0D8L5MZ3W
+B0D8L7KG4V
+B0D8L66MVY
+B0D8KXVXNP
+B0D8L64CZ2
+B0D8L5LBS7
+B0D8KYZ1QX
+B0D8L541QS
+B0D8L3MPMM
+B0D8L68LYJ
+B0D8L5374Q
+B0D8KWBZZT
+B0D8KDBJZ9
+B0D8L3L6QV
+B0D8L4S5FM
+B0D8KZTB2F
+B0D8L4MJM1
+B0D8L7JHKP
+B0D8KYRBP5
+B0D8KZ6Y31
+B0D8L46M4J
+B0D8L4MFNM
+B0D8L75M1C
+B0D8L65NZK
+B0D8L2H4N5
+B0D8KW3T3R
+B0D8L7ZNB4
+B0D8L1RR5F
+B0D8KWWSGK
+B0D8KXQ1TY
+B0D8L7TK43
+B0D8L53T1N
+B0D8L84F45
+B0D8L5TSTR
+B0D8KWV5TZ
+B0D8KZ277D
+B0D8KYTB6X
+B0D8KFPMDD
+B0D8L7X35W
+B0D8L8GVKX
+B0D8KYVH1N
+B0D8L6R5WK
+B0D8L86VFT
+B0D8L5DLXC
+B0D8L3B1DG
+B0D8L5MHRM
+B0D8L74829
+B0D8L4JT5W
+B0D8L4YRD7
+B0D8L1KD8D
+B0D8L4237J
+B0D8KZ1ZTS
+B0D8L6MG71
+B0D8L5Q4RK
+B0D8L3F291
+B0D8L4Q7P6
+B0D8L3QQSN
+B0D8L64LYM
+B0D8KG18D5
+B0D8KFM5WC
+B0D8L5B2CJ
+B0D8KXL6PL
+B0D8KVZQ49
+B0D8L74NPN
+B0D8L6M18M
+B0D8L67D57
+B0D8L7TT95
+B0D8L7CBR6
+B0D8L76DHY
+B0D8L7ZDGP
+B0D8KZF3JT
+B0D8L9C9N8
+B0D8KXG8KY
+B0D8KVB896
+B0D8L81YYB
+B0D8LB12Q9
+B0D8KYP1PR
+B0D8L6B7WN
+B0D8L5PB9W
+B0D8L4DXT6
+B0D8L4DX9G
+B0D8L5TDZG
+B0D8KXS4SG
+B0D8L44DP6
+B0D8L4ZCC8
+B0D8L8S3J3
+B0D8L687DT
+B0D8L9P7W6
+B0D8L6S6K9
+B0D8L91QJL
+B0D8L55YNH
+B0D8L5Q7WC
+B0D8L8V1VT
+B0D8KW534K
+B0D8KZ4GCG
+B0D8L9D5SZ
+B0D8L8CNFB
+B0D8L6PTLZ
+B0D8L7DFNM
+B0D8L5488T
+B0D8L3YW36
+B0D8L8FMB1
+B0D8L54WYR
+B0D8KF5SZD
+B0D8L9PPKC
+B0D8L81YPZ
+B0D8L8341N
+B0D8L4WNMX
+B0D8KVZMMV
+B0D8KX6DZ9
+B0D8KF6W7Y
+B0D8L6LHTK
+B0D8L5S5RN
+B0D8KXRG13
+B0D8L5WJ5L
+B0D8L7DK2D
+B0D8L5JSG6
+B0D8L86SH9
+B0D8L6Z7M1
+B0D8KWQ4DV
+B0D8L5SX3B
+B0D8KW1KG1
+B0D8L8XBH6
+B0D8KX7J9B
+B0D8L3WHSX
+B0D8L41H2Z
+B0D8L7T42V
+B0D8L4TZPX
+B0D8KWM3VQ
+B0D8KZ228P
+B0D8L71Z7Z
+B0D8L5CW8H
+B0D8KVMGMQ
+B0D8L676GT
+B0D8L7JST6
+B0D8L67BPG
+B0D8KYW86F
+B0D8L6RJ6G
+B0D8L44RWP
+B0D8L54TSG
+B0D8L4XN8W
+B0D8L879XV
+B0D8L4L1N8
+B0D8L4DYSM
+B0D8KYCYT7
+B0D8L637W3
+B0D8L675R2
+B0D8KYZ11C
+B0D8L2DQW6
+B0D8L4M6RW
+B0D8L755JV
+B0D8KWL15F
+B0D8L8CFLJ
+B0DPL17TMJ
+B0DSBX2FDP`;
+
+    function parseAsins(text) {
+      const matches = text.toUpperCase().match(/\b[A-Z0-9]{10}\b/g) || [];
+      return [...new Set(matches)];
+    }
+
+    let asins = parseAsins(defaultAsinText);
+    let urls = [];
+    const inputPrefix = 'amazon-asin-current-input-';
+    const clickedPrefix = 'amazon-asin-clicked-';
+    const favoritesPrefix = 'amazon-asin-favorites-';
+    const currentPrefix = 'amazon-asin-current-';
+    const changelog = [
+      { version: 'v1.8.0', date: '2026-08-12', changes: ['修正商品链接 ASIN 识别和日本站星级读取', '防止未加载的数据覆盖已保存记录', '按国家站点分别保存 ASIN 输入列表，并确保点击链接复用商品标签页'] },
+      { version: 'v1.7.0', date: '2026-08-12', changes: ['更新日志内嵌到 HTML，移除外部 TXT 依赖', '按国家站点分别保存访问、收藏和当前 ASIN', '保存用户加载的 ASIN 列表', '增强 localStorage 和剪贴板兼容性'] },
+      { version: 'v1.6.0', date: '2026-08-06', changes: ['增加历史记录导出功能', '增加清除访问记录功能'] },
+      { version: 'v1.5.0', date: '2026-08-06', changes: ['增加国家站点选择', '支持粘贴 ASIN、亚马逊链接和混合文本'] },
+      { version: 'v1.4.0', date: '2026-08-06', changes: ['改为复用同一个 Amazon 商品标签页'] },
+      { version: 'v1.3.0', date: '2026-08-06', changes: ['增加键盘浏览功能'] },
+      { version: 'v1.2.0', date: '2026-08-06', changes: ['增加收藏功能和复制收藏 ASIN 功能'] },
+      { version: 'v1.1.0', date: '2026-08-06', changes: ['增加点击后标黄和访问记录'] },
+      { version: 'v1.0.0', date: '2026-08-06', changes: ['创建 Amazon ASIN 快速访问页面'] }
+    ];
+    function readStored(key, fallback = []) {
+      try {
+        const value = JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback));
+        return Array.isArray(value) ? value : fallback;
+      } catch (error) {
+        return fallback;
+      }
+    }
+    function siteKey(prefix) { return `${prefix}${domain()}`; }
+    let clicked = new Set(readStored(siteKey(clickedPrefix)));
+    let favorites = new Set(readStored(siteKey(favoritesPrefix)));
+    let currentAsin = localStorage.getItem(siteKey(currentPrefix)) || null;
+    let showUnvisited = false;
+
+    function domain() {
+      return document.getElementById('marketplace').value;
+    }
+
+    function productUrl(asin) {
+      return `https://www.amazon.${domain()}/dp/${asin}`;
+    }
+
+    function renderLinks() {
+      urls = asins.map(productUrl);
+      document.getElementById('count').textContent = `共 ${asins.length} 个 ASIN`;
+      document.getElementById('links').innerHTML = asins.map((asin, i) =>
+        `<li class="${clicked.has(asin) ? 'clicked' : ''}" data-row-asin="${asin}"><a href="${urls[i]}" target="amazon-review-tab" data-asin="${asin}">${asin}</a><button class="favorite ${favorites.has(asin) ? 'on' : ''}" data-favorite="${asin}">${favorites.has(asin) ? '★ 已收藏' : '☆ 收藏'}</button></li>`
+      ).join('');
+      applyFilter();
+    }
+
+    function saveSets() {
+      localStorage.setItem(siteKey(clickedPrefix), JSON.stringify([...clicked]));
+      localStorage.setItem(siteKey(favoritesPrefix), JSON.stringify([...favorites]));
+      if (currentAsin) localStorage.setItem(siteKey(currentPrefix), currentAsin);
+      else localStorage.removeItem(siteKey(currentPrefix));
+    }
+
+    async function copyText(text) {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const helper = document.createElement('textarea');
+      helper.value = text;
+      helper.style.position = 'fixed';
+      helper.style.opacity = '0';
+      document.body.appendChild(helper);
+      helper.select();
+      document.execCommand('copy');
+      helper.remove();
+    }
+
+    function applyFilter() {
+      document.querySelectorAll('[data-row-asin]').forEach(row => {
+        row.classList.toggle('hidden', showUnvisited && clicked.has(row.dataset.rowAsin));
+      });
+      document.getElementById('toggleUnvisited').textContent = showUnvisited ? '显示全部 ASIN' : '只显示未访问';
+    }
+
+    function openAsin(asin) {
+      if (!asin) return;
+      currentAsin = asin;
+      clicked.add(asin);
+      saveSets();
+      const row = document.querySelector(`[data-row-asin="${asin}"]`);
+      if (row) row.classList.add('clicked');
+      window.open(productUrl(asin), 'amazon-review-tab');
+      applyFilter();
+    }
+
+    function openNext(favoriteCurrent = false) {
+      if (favoriteCurrent && currentAsin) {
+        favorites.add(currentAsin);
+        const button = document.querySelector(`[data-favorite="${currentAsin}"]`);
+        if (button) {
+          button.textContent = '★ 已收藏';
+          button.classList.add('on');
+        }
+        saveSets();
+      }
+      const next = asins.find(asin => !clicked.has(asin));
+      if (!next) {
+        alert('所有 ASIN 都已访问');
+        return;
+      }
+      openAsin(next);
+    }
+
+    document.getElementById('links').addEventListener('click', event => {
+      const favoriteButton = event.target.closest('button[data-favorite]');
+      if (favoriteButton) {
+        const asin = favoriteButton.dataset.favorite;
+        if (favorites.has(asin)) {
+          favorites.delete(asin);
+          favoriteButton.textContent = '☆ 收藏';
+          favoriteButton.classList.remove('on');
+        } else {
+          favorites.add(asin);
+          favoriteButton.textContent = '★ 已收藏';
+          favoriteButton.classList.add('on');
+        }
+        localStorage.setItem(siteKey(favoritesPrefix), JSON.stringify([...favorites]));
+        return;
+      }
+      const link = event.target.closest('a[data-asin]');
+      if (!link) return;
+      const asin = link.dataset.asin;
+      currentAsin = asin;
+      clicked.add(asin);
+      link.parentElement.classList.add('clicked');
+      saveSets();
+      applyFilter();
+    });
+
+    document.getElementById('openAll').addEventListener('click', () => openNext(false));
+    document.getElementById('openNext').addEventListener('click', () => openNext(false));
+    document.getElementById('favoriteNext').addEventListener('click', () => openNext(true));
+    document.getElementById('toggleUnvisited').addEventListener('click', () => {
+      showUnvisited = !showUnvisited;
+      applyFilter();
+    });
+    document.getElementById('copyLinks').addEventListener('click', async () => {
+      await copyText(urls.join('\n'));
+      alert('全部链接已复制');
+    });
+    document.getElementById('copyFavorites').addEventListener('click', async () => {
+      if (!favorites.size) {
+        alert('当前还没有收藏 ASIN');
+        return;
+      }
+      const currentFavorites = asins.filter(asin => favorites.has(asin));
+      await copyText(currentFavorites.join('\n'));
+      alert(`已复制 ${currentFavorites.length} 个收藏 ASIN`);
+    });
+    document.getElementById('exportHistory').addEventListener('click', () => {
+      const record = {
+        exportedAt: new Date().toISOString(),
+        marketplace: domain(),
+        currentAsin,
+        clickedAsins: [...clicked],
+        favoriteAsins: [...favorites],
+        currentInputAsins: [...asins]
+      };
+      const blob = new Blob([JSON.stringify(record, null, 2)], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `amazon_asin_history_${domain()}_${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+    });
+    document.getElementById('clearHistory').addEventListener('click', () => {
+      if (!confirm('确定清除所有已访问记录吗？收藏记录不会被删除。')) return;
+      clicked.clear();
+      currentAsin = null;
+      localStorage.removeItem(siteKey(clickedPrefix));
+      localStorage.removeItem(siteKey(currentPrefix));
+      renderLinks();
+    });
+    document.getElementById('loadAsins').addEventListener('click', () => {
+      const parsed = parseAsins(document.getElementById('asinInput').value);
+      if (!parsed.length) {
+        alert('没有识别到有效的 10 位 ASIN');
+        return;
+      }
+      asins = parsed;
+      localStorage.setItem(siteKey(inputPrefix), JSON.stringify(asins));
+      if (currentAsin && !asins.includes(currentAsin)) currentAsin = null;
+      renderLinks();
+    });
+    document.getElementById('clearInput').addEventListener('click', () => {
+      document.getElementById('asinInput').value = '';
+      document.getElementById('asinInput').focus();
+    });
+    document.getElementById('marketplace').addEventListener('change', () => {
+      clicked = new Set(readStored(siteKey(clickedPrefix)));
+      favorites = new Set(readStored(siteKey(favoritesPrefix)));
+      currentAsin = localStorage.getItem(siteKey(currentPrefix)) || null;
+      const savedInput = readStored(siteKey(inputPrefix), null);
+      asins = savedInput && savedInput.length ? savedInput : parseAsins(defaultAsinText);
+      document.getElementById('asinInput').value = asins.join('\n');
+      renderLinks();
+    });
+    document.getElementById('showChangelog').addEventListener('click', () => {
+      const panel = document.getElementById('changelogPanel');
+      panel.hidden = !panel.hidden;
+    });
+    document.getElementById('checkUpdate').addEventListener('click', async () => {
+      try {
+        const response = await fetch(`https://raw.githubusercontent.com/guoq-prog/amazon-product-info-capture/main/version.json?t=${Date.now()}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error(response.status);
+        const remote = await response.json();
+        alert(`GitHub 最新版本：v${remote.version}\n${remote.notes || ''}\n${remote.download || ''}`);
+      } catch (_) { alert('暂时无法连接 GitHub 检查更新，请稍后重试。'); }
+    });
+    document.getElementById('downloadExtensionZip').addEventListener('click', () => {
+      const link = document.createElement('a');
+      link.href = 'amazon_review_capture_extension.zip';
+      link.download = 'amazon_review_capture_extension.zip';
+      link.click();
+    });
+    document.getElementById('showUsage').addEventListener('click', () => {
+      const panel = document.getElementById('usagePanel');
+      panel.hidden = !panel.hidden;
+    });
+    document.addEventListener('keydown', event => {
+      if (event.ctrlKey || event.altKey || event.metaKey || ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+      if (event.key.toLowerCase() === 'f') openNext(true);
+      if (event.key.toLowerCase() === 'n') openNext(false);
+      if (event.key === 'Enter' || event.key === 'ArrowRight') openNext(false);
+    });
+    document.getElementById('changelog').innerHTML = changelog.map(item => `
+      <h3>${item.version}｜${item.date}</h3>
+      <ul>${item.changes.map(change => `<li>${change}</li>`).join('')}</ul>
+    `).join('');
+    const savedInput = readStored(siteKey(inputPrefix), null);
+    if (savedInput && savedInput.length) {
+      asins = savedInput;
+      document.getElementById('asinInput').value = savedInput.join('\n');
+    } else {
+      document.getElementById('asinInput').value = defaultAsinText.trim();
+    }
+    renderLinks();
+  </script>
+</body>
+</html>

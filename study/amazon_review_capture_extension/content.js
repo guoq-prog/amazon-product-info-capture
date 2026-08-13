@@ -1,0 +1,391 @@
+(() => {
+  'use strict';
+
+  const VERSION = '1.3.22';
+  const UPDATE_URL = 'https://raw.githubusercontent.com/guoq-prog/amazon-product-info-capture/main/version.json';
+  // 由 alipay.jpg 以 Python 灰度阈值提取的 41×41 二维码模块；不再依赖外部 JPG。
+  const ALIPAY_QR_HEX = 'fed6ad733fc168ad3a506e898a734bb753c9afa5dbaeba7302ec1411d9cd07faaaaaaafe00ca947f00121da6e89dde7c61b55b88e92219c59f22d37b4364e40baf5a4f8a0ce8f501ba156a0496b8f3982d6006a0b26c9094c700561acbada021126633900532ba7e900057a9a30400275e88cc013c147266010070fa0c7a4fe33205ef108226ed5d21b0208b7d929f3f38a6c86610611b30dea619226f601a6119854c909e2ba952fa807e6047c47f948ad2ab504c795f514ba4e8fe2f85d6822f534ae9c044843304f0deab6afe579b25db0';
+  const STORAGE_KEY = 'amazon-review-capture-extension-records-v1';
+  const HISTORY_KEY = 'amazon-review-capture-extension-history-v1';
+  const SETTINGS_KEY = 'amazon-review-capture-extension-settings-v1';
+  const PANEL_ID = 'amazon-review-capture-extension-panel';
+  const exportFields = [
+    ['asin', 'ASIN'], ['marketplace', '站点'], ['title', '标题'], ['brand', '品牌'], ['parentAsin', '父 ASIN'],
+    ['rating', '星级'], ['reviewCount', '评分数量'], ['categoryPath', '类目路径'], ['bsr', 'BSR / 畅销排名'],
+    ['mainImageUrl', '主图 URL'], ['imageCount', '图片数量'], ['bulletPoints', '五点描述'],
+    ['productDescription', '商品描述'], ['aPlusText', 'A+ 模块文本'], ['capturedAt', '采集时间'], ['url', '商品链接']
+  ];
+  const defaultSettings = { autoCapture: true, autoCollapse: true, retryAttempts: 20, exportFormat: 'csv', selectedExportFields: exportFields.map(([key]) => key) };
+  let records = [];
+  let history = [];
+  let settings = { ...defaultSettings };
+  let collapsed = false;
+  let lastRecord = null;
+  let activeSection = null;
+
+  const cleanText = value => (value || '').replace(/\s+/g, ' ').trim();
+  const marketplace = () => location.hostname.replace(/^www\./, '');
+  const numberFromText = value => cleanText(value).replace(/\u00a0/g, ' ').match(/[\d][\d.,\s']*/)?.[0].trim() || '';
+  const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+
+  function alipayQrBits() {
+    return [...ALIPAY_QR_HEX].flatMap(char => [...Number.parseInt(char, 16).toString(2).padStart(4, '0')]).slice(0, 41 * 41);
+  }
+
+  function drawAlipayQr() {
+    const canvas = document.querySelector(`#${PANEL_ID} .arc-alipay-qr`);
+    if (!canvas) return;
+    const bits = alipayQrBits();
+    const scale = 4, quiet = 4;
+    canvas.width = canvas.height = (41 + quiet * 2) * scale;
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#fff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = '#000';
+    bits.forEach((bit, index) => {
+      if (bit === '1') context.fillRect((index % 41 + quiet) * scale, (Math.floor(index / 41) + quiet) * scale, scale, scale);
+    });
+  }
+
+  function getAsin() {
+    const match = decodeURIComponent(location.pathname).match(/\/(?:dp|gp\/product|商品)\/([A-Z0-9]{10})(?:[/?]|$)/i);
+    if (match) return match[1].toUpperCase();
+    const canonical = document.querySelector('link[rel="canonical"]')?.href || '';
+    return canonical.match(/\/(?:dp|gp\/product|商品)\/([A-Z0-9]{10})/i)?.[1].toUpperCase() || '';
+  }
+
+  function extractRating() {
+    const element = document.querySelector('#acrPopover, [data-hook="rating-out-of-text"], #averageCustomerReviews .a-icon-alt');
+    const text = cleanText(element?.getAttribute('title') || element?.getAttribute('aria-label') || element?.textContent);
+    return text.match(/5\s*つ星のうち\s*(\d[\d.,]*)/i)?.[1] || text.match(/(\d[\d.,]*)\s*(?:out of|von|sur|su|de)\s*5/i)?.[1] || text.match(/\b(\d[\d.,]*)\b/)?.[1] || '';
+  }
+
+  function extractJsonLd() {
+    for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        const data = JSON.parse(script.textContent);
+        const roots = Array.isArray(data) ? data : [data];
+        const product = roots.flatMap(item => [item, ...(Array.isArray(item?.['@graph']) ? item['@graph'] : [])]).find(item => item?.aggregateRating);
+        if (product?.aggregateRating) return product.aggregateRating;
+      } catch (_) { /* 忽略不完整 JSON-LD。 */ }
+    }
+    return {};
+  }
+
+  function textFrom(selector) {
+    return cleanText(document.querySelector(selector)?.textContent);
+  }
+
+  function unique(items) {
+    return [...new Set(items.filter(Boolean))];
+  }
+
+  function highestQualityUrl(url) {
+    // Amazon 图片 URL 中的尺寸指令会生成缩略图；去除该指令可请求同一页面公开的最大规格。
+    return (url || '').replace(/\._[^/]*_\.(?=jpg|jpeg|png|webp)/i, '.');
+  }
+
+  function imageUrlsFromDynamicImage(value) {
+    if (!value) return [];
+    try {
+      const candidates = Object.entries(JSON.parse(value));
+      return candidates.sort((a, b) => (b[1][0] * b[1][1]) - (a[1][0] * a[1][1])).map(([url]) => highestQualityUrl(url));
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function extractImages() {
+    const main = document.querySelector('#landingImage, #imgTagWrapperId img, #main-image-container img');
+    const gallery = [...document.querySelectorAll('#altImages img, #imageBlockThumbs img, [data-csa-c-content-id="image-block"] img')];
+    const urls = unique([
+      ...imageUrlsFromDynamicImage(main?.getAttribute('data-a-dynamic-image')),
+      highestQualityUrl(main?.currentSrc || main?.src),
+      ...gallery.flatMap(image => imageUrlsFromDynamicImage(image.getAttribute('data-a-dynamic-image'))),
+      ...gallery.map(image => highestQualityUrl(image.currentSrc || image.src))
+    ]);
+    const productImages = urls.filter(url => !/play-button|video|sprite/i.test(url));
+    return { mainImageUrl: productImages[0] || '', imageUrls: productImages, imageCount: productImages.length };
+  }
+
+  function extractParentAsin() {
+    const html = document.documentElement.innerHTML;
+    return html.match(/["']parentAsin["']\s*[:=]\s*["']([A-Z0-9]{10})/i)?.[1]?.toUpperCase() || '';
+  }
+
+  function extractVariants() {
+    const values = [...document.querySelectorAll('[id^="variation_"] .selection, [id^="variation_"] .a-dropdown-prompt, [id^="variation_"] [aria-checked="true"]')]
+      .map(element => cleanText(element.textContent));
+    return unique(values).join(' | ');
+  }
+
+  function extractCategoryPath() {
+    return unique([...document.querySelectorAll('#wayfinding-breadcrumbs_feature_div a, #wayfinding-breadcrumbs_container a')].map(link => cleanText(link.textContent))).join(' > ');
+  }
+
+  function extractBsr() {
+    const labels = /best\s+sellers\s+rank|amazon-bestseller-rang|classement\s+des\s+meilleures|clasificación.*vendidos|ベストセラー順位/i;
+    for (const row of document.querySelectorAll('#productDetails_detailBullets_sections1 tr, #productDetails_db_sections tr, #detailBullets_feature_div li')) {
+      const text = cleanText(row.textContent);
+      if (labels.test(text)) return text.replace(/^[^:#：]+[#：:]\s*/i, '').trim();
+    }
+    return '';
+  }
+
+  function extractItemDetails() {
+    const details = {};
+    for (const row of document.querySelectorAll('#productDetails_detailBullets_sections1 tr, #productDetails_techSpec_section_1 tr, #detailBullets_feature_div li')) {
+      const cells = [...row.querySelectorAll('th, td')].map(cell => cleanText(cell.textContent)).filter(Boolean);
+      if (cells.length >= 2) details[cells[0].replace(/[:：]$/, '')] = cells.slice(1).join(' ');
+    }
+    return details;
+  }
+
+  function visibleText(selector) {
+    const source = document.querySelector(selector);
+    if (!source) return '';
+    const clone = source.cloneNode(true);
+    clone.querySelectorAll('script, style, noscript, template, svg, img').forEach(node => node.remove());
+    return cleanText(clone.textContent);
+  }
+
+  function extractBullets() {
+    return unique([...document.querySelectorAll('#feature-bullets li .a-list-item, #featurebullets_feature_div li')].map(item => cleanText(item.textContent))).join('\n');
+  }
+
+  function extractAPlusText() {
+    return unique([...document.querySelectorAll('#aplus, #aplus_feature_div, #aplus3p_feature_div')].map(item => {
+      const clone = item.cloneNode(true);
+      clone.querySelectorAll('script, style, noscript, template, svg, img, video').forEach(node => node.remove());
+      return cleanText(clone.textContent);
+    })).filter(text => text.length > 0).join('\n');
+  }
+
+  function collect() {
+    const asin = getAsin();
+    if (!asin) return null;
+    const aggregateRating = extractJsonLd();
+    const reviewElement = document.querySelector('#acrCustomerReviewText, [data-hook="total-review-count"], #averageCustomerReviews a[href*="review"]');
+    const images = extractImages();
+    const itemDetails = extractItemDetails();
+    return {
+      asin, marketplace: marketplace(),
+      title: cleanText(document.querySelector('#productTitle, h1[data-automation-id="title"]')?.textContent || document.title),
+      brand: itemDetails.Brand || itemDetails.Marke || itemDetails['Brand Name'] || cleanText(document.querySelector('#bylineInfo, #brand')?.textContent).replace(/^(?:Visit the|Brand:|Marke:|品牌：)\s*/i, '').replace(/\s+Store$/i, ''),
+      parentAsin: extractParentAsin(),
+      selectedVariants: extractVariants(),
+      rating: extractRating() || cleanText(aggregateRating.ratingValue),
+      reviewCount: numberFromText(reviewElement?.textContent) || numberFromText(aggregateRating.reviewCount),
+      availability: textFrom('#availability, #availabilityInsideBuyBox, #outOfStock'),
+      categoryPath: extractCategoryPath(),
+      bsr: extractBsr() || itemDetails['Best Sellers Rank'] || itemDetails['Amazon-Bestseller-Rang'] || '',
+      bulletPoints: extractBullets(),
+      productDescription: visibleText('#productDescription, #productDescription_feature_div'),
+      aPlusText: extractAPlusText(),
+      ...images,
+      url: location.href, capturedAt: new Date().toISOString()
+    };
+  }
+
+  async function saveAll() {
+    await chrome.storage.local.set({ [STORAGE_KEY]: records, [HISTORY_KEY]: history, [SETTINGS_KEY]: settings });
+  }
+
+  function selectedFields() {
+    const keys = Array.isArray(settings.selectedExportFields) ? settings.selectedExportFields : defaultSettings.selectedExportFields;
+    return exportFields.filter(([key]) => keys.includes(key));
+  }
+
+  async function checkUpdate() {
+    try {
+      const response = await fetch(`${UPDATE_URL}?t=${Date.now()}`, { cache: 'no-store' });
+      if (!response.ok) throw new Error(response.status);
+      const remote = await response.json();
+      if (remote.version && remote.version !== VERSION) {
+        if (confirm(`发现新版本 v${remote.version}\n${remote.notes || ''}\n\n是否打开下载地址？`) && remote.download) window.open(remote.download, '_blank', 'noopener');
+      } else alert(`当前已是最新版本 v${VERSION}`);
+    } catch (_) { alert('暂时无法连接 GitHub 检查更新，请稍后重试。'); }
+  }
+
+  async function capture() {
+    const record = collect();
+    if (!record) return updatePanel('当前页面不是商品详情页');
+    if (!record.rating && !record.reviewCount) return updatePanel('未读取到星级或评分数量；请等待页面加载或检查验证码');
+    const index = records.findIndex(item => item.asin === record.asin && item.marketplace === record.marketplace);
+    if (index >= 0) {
+      records[index] = { ...records[index], ...record, rating: record.rating || records[index].rating, reviewCount: record.reviewCount || records[index].reviewCount };
+      lastRecord = records[index];
+    } else {
+      records.push(record);
+      lastRecord = record;
+    }
+    history.push({ ...lastRecord, capturedAt: record.capturedAt });
+    await saveAll();
+    updatePanel('√ 已成功读取', true);
+    return true;
+  }
+
+  function updatePanel(status, success = false) {
+    const panel = document.getElementById(PANEL_ID);
+    if (!panel) return;
+    const current = collect();
+    panel.querySelector('[data-role="status"]').textContent = status || (current ? `${current.asin}：${current.rating || '未读取星级'} 星，${current.reviewCount || '未读取评分数'}` : '当前页面不是商品详情页');
+    panel.querySelector('[data-role="count"]').textContent = `最新记录 ${records.length} 条｜历史快照 ${history.length} 条`;
+    if (success && settings.autoCollapse) collapsed = true;
+    panel.classList.toggle('arc-collapsed', collapsed);
+    renderDrawer();
+  }
+
+  function exportData(kind = 'latest') {
+    const data = kind === 'history' ? history : records;
+    if (!data.length) return alert('还没有可导出的记录');
+    const fields = selectedFields();
+    if (!fields.length) return alert('请至少勾选一个导出字段');
+    if (settings.exportFormat === 'json') {
+      const filtered = data.map(row => Object.fromEntries(fields.map(([key]) => [key, row[key]])));
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(new Blob([JSON.stringify(filtered, null, 2)], { type: 'application/json;charset=utf-8' }));
+      link.download = `amazon_rating_${kind}_${new Date().toISOString().slice(0, 10)}.json`;
+      link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000); return;
+    }
+    const columns = fields.flatMap(([key]) => key === 'bulletPoints'
+      ? ['bulletPoint1', 'bulletPoint2', 'bulletPoint3', 'bulletPoint4', 'bulletPoint5']
+      : [key]);
+    const quote = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const csv = '\ufeff' + [columns.join(','), ...data.map(row => {
+      const bullets = String(row.bulletPoints || '').split(/\n+/).map(cleanText).filter(Boolean);
+      return columns.map(key => quote(key.startsWith('bulletPoint') ? bullets[Number(key.slice(-1)) - 1] || '' : Array.isArray(row[key]) ? JSON.stringify(row[key]) : row[key])).join(',');
+    })].join('\n');
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    link.download = `amazon_rating_${kind}_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  }
+
+  function crc32(bytes) {
+    let crc = 0xffffffff;
+    for (const byte of bytes) { crc ^= byte; for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0); }
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  function zipBytes(files) {
+    const encoder = new TextEncoder(); const chunks = []; const central = []; let offset = 0;
+    const put16 = (n, at) => { at[0] = n & 255; at[1] = (n >>> 8) & 255; };
+    const put32 = (n, at) => { put16(n, at); put16(n >>> 16, at.subarray(2)); };
+    for (const file of files) {
+      const name = encoder.encode(file.name); const data = file.data; const local = new Uint8Array(30 + name.length); put32(0x04034b50, local); put16(20, local.subarray(4)); put16(0x800, local.subarray(6)); put16(0, local.subarray(8)); put32(crc32(data), local.subarray(14)); put32(data.length, local.subarray(18)); put32(data.length, local.subarray(22)); put16(name.length, local.subarray(26)); local.set(name, 30); chunks.push(local, data);
+      const entry = new Uint8Array(46 + name.length); put32(0x02014b50, entry); put16(20, entry.subarray(4)); put16(20, entry.subarray(6)); put16(0x800, entry.subarray(8)); put32(crc32(data), entry.subarray(16)); put32(data.length, entry.subarray(20)); put32(data.length, entry.subarray(24)); put16(name.length, entry.subarray(28)); put32(offset, entry.subarray(42)); entry.set(name, 46); central.push(entry); offset += local.length + data.length;
+    }
+    const centralSize = central.reduce((sum, part) => sum + part.length, 0); const end = new Uint8Array(22); put32(0x06054b50, end); put16(files.length, end.subarray(8)); put16(files.length, end.subarray(10)); put32(centralSize, end.subarray(12)); put32(offset, end.subarray(16));
+    return new Blob([...chunks, ...central, end], { type: 'application/zip' });
+  }
+
+  async function exportImages() {
+    const record = lastRecord || collect();
+    if (!record?.imageUrls?.length) return alert('当前没有可导出的商品图片');
+    const files = []; const failed = [];
+    for (let i = 0; i < record.imageUrls.length; i++) {
+      try { const response = await fetch(record.imageUrls[i]); if (!response.ok) throw new Error(response.status); files.push({ name: `${i + 1}_${i === 0 ? 'main' : '副图'}.jpg`, data: new Uint8Array(await response.arrayBuffer()) }); } catch (_) { failed.push(record.imageUrls[i]); }
+    }
+    if (!files.length) return alert('图片服务器拒绝浏览器读取，无法生成 ZIP；可使用导出的图片 URL 清单下载。');
+    const link = document.createElement('a'); link.href = URL.createObjectURL(zipBytes(files)); link.download = `amazon_images_${record.asin}.zip`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    if (failed.length) alert(`已导出 ${files.length} 张图片，${failed.length} 张因跨域或服务器限制失败。`);
+  }
+
+  function exportImageManifest() {
+    const data = records.filter(record => record.imageUrls?.length).flatMap(record => record.imageUrls.map((url, index) => ({ asin: record.asin, marketplace: record.marketplace, imageIndex: index + 1, imageType: index === 0 ? 'main' : 'secondary', imageUrl: url })));
+    if (!data.length) return alert('没有可导出的图片 URL');
+    const columns = ['asin', 'marketplace', 'imageIndex', 'imageType', 'imageUrl'];
+    const quote = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const csv = '\ufeff' + [columns.join(','), ...data.map(row => columns.map(key => quote(row[key])).join(','))].join('\n');
+    const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })); link.download = `amazon_image_manifest_${new Date().toISOString().slice(0, 10)}.csv`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  }
+
+  function renderDrawer() {
+    const drawer = document.querySelector(`#${PANEL_ID} [data-role="drawer"]`);
+    if (!drawer) return;
+    const record = lastRecord || collect();
+    drawer.innerHTML = `
+      <div class="arc-section-title">常用</div>
+      <button class="arc-nav" data-action="toggle-section" data-target="preview"><span>本页数据预览</span><small>查看刚采集的字段</small><b>›</b></button>
+      <section class="arc-panel-section" data-section="preview" ${activeSection === 'preview' ? '' : 'hidden'}><div class="arc-preview">${record ? `ASIN：${escapeHtml(record.asin)}<br>品牌：${escapeHtml(record.brand || '未读取')}<br>父 ASIN：${escapeHtml(record.parentAsin || '未读取')}<br>星级：${escapeHtml(record.rating || '未读取')}<br>评分数量：${escapeHtml(record.reviewCount || '未读取')}<br>类目：${escapeHtml(record.categoryPath || '未读取')}<br>BSR：${escapeHtml(record.bsr || '未读取')}<br>图片：${record.imageCount || 0} 张${record.mainImageUrl ? `<br><a href="${escapeHtml(record.mainImageUrl)}" target="_blank" rel="noreferrer">打开主图（最大公开规格）</a>` : ''}` : '尚未成功读取本页数据'}</div></section>
+      <button class="arc-nav" data-action="toggle-section" data-target="data"><span>导出与数据</span><small>导出、清空和历史快照</small><b>›</b></button>
+      <section class="arc-panel-section" data-section="data" ${activeSection === 'data' ? '' : 'hidden'}><button data-action="export-images">导出图片 ZIP</button><button data-action="export-image-manifest">导出图片清单 CSV</button></section>
+      <div class="arc-section-title">设置</div>
+      <button class="arc-nav" data-action="toggle-section" data-target="settings"><span>⚙ 功能设置</span><small>采集、折叠、重试、导出字段</small><b>›</b></button>
+      <section class="arc-panel-section" data-section="settings" ${activeSection === 'settings' ? '' : 'hidden'}>
+        <label><input type="checkbox" data-setting="autoCapture" ${settings.autoCapture ? 'checked' : ''}> 自动采集</label>
+        <label><input type="checkbox" data-setting="autoCollapse" ${settings.autoCollapse ? 'checked' : ''}> 成功后自动缩小</label>
+        <label>重试次数 <input type="number" min="1" max="60" data-setting="retryAttempts" value="${settings.retryAttempts}"></label>
+        <label>导出格式 <select data-setting="exportFormat"><option value="csv" ${settings.exportFormat === 'csv' ? 'selected' : ''}>CSV</option><option value="json" ${settings.exportFormat === 'json' ? 'selected' : ''}>JSON</option></select></label>
+        <div class="arc-export-fields"><b>导出字段</b><button data-action="select-all-fields">全选</button><button data-action="clear-fields">清空</button>${exportFields.map(([key, label]) => `<label><input type="checkbox" data-export-field="${key}" ${selectedFields().some(([selected]) => selected === key) ? 'checked' : ''}> ${label}</label>`).join('')}</div>
+      </section>
+      <div class="arc-section-title">关于</div>
+      <button class="arc-nav arc-nav-secondary" data-action="toggle-section" data-target="help"><span>使用帮助</span><small>采集异常与字段说明</small><b>›</b></button>
+      <section class="arc-panel-section arc-info" data-section="help" ${activeSection === 'help' ? '' : 'hidden'}><p>面板只在商品详情页显示。验证码、登录提示或 Cookie 页面无法读取。评分数量是 Amazon 显示的总评分数，可能包含未写文字的评分。</p></section>
+      <button class="arc-nav arc-nav-secondary" data-action="toggle-section" data-target="changelog"><span>更新版本记录</span><small>当前 v${VERSION}</small><b>›</b></button>
+      <section class="arc-panel-section arc-info" data-section="changelog" ${activeSection === 'changelog' ? '' : 'hidden'}><p><b>当前版本 v${VERSION}</b></p><button data-action="check-update">检查更新</button><p>v1.3.22：增加 GitHub 版本检查。</p><p>v1.3.11：二维码改用 Canvas 像素渲染，避免 Amazon 样式干扰。</p></section>
+      <button class="arc-nav arc-nav-secondary" data-action="toggle-section" data-target="support"><span>♡ 打赏 / 支持作者</span><small>自愿支持，不影响功能使用</small><b>›</b></button>
+      <section class="arc-panel-section arc-info" data-section="support" ${activeSection === 'support' ? '' : 'hidden'}><p>感谢使用。本扩展所有功能均可免费使用。</p><p><b>作者联系方式</b><br><a href="mailto:qing_guo2000@outlook.com">qing_guo2000@outlook.com</a><br>有任何疑问或需求可以联系。</p><p><b>支付宝打赏</b><br><span class="arc-qr-hint">请使用支付宝扫一扫</span><canvas class="arc-alipay-qr" width="196" height="196" aria-label="支付宝收款二维码"></canvas></p></section>`;
+    drawAlipayQr();
+  }
+
+  function createPanel() {
+    if (document.getElementById(PANEL_ID)) return;
+    const panel = document.createElement('section'); panel.id = PANEL_ID;
+    panel.innerHTML = '<div class="arc-summary"><strong>Amazon 商品信息采集器</strong><button class="arc-toggle" data-action="toggle">隐藏</button></div><div data-role="status">正在读取商品数据…</div><div class="arc-details"><div class="arc-toolbar"><button class="arc-btn arc-btn-primary" data-action="capture">↻ 重新读取 <em>Alt+R</em></button><button class="arc-btn arc-btn-export" data-action="export">↓ 导出最新</button><button class="arc-btn arc-btn-export-light" data-action="export-history">↓ 导出历史</button><button class="arc-btn arc-btn-danger" data-action="clear">清空最新</button><button class="arc-btn arc-btn-danger-light" data-action="clear-history">清空历史</button><button class="arc-btn arc-btn-more" data-action="more">⚙ 设置 / 更多</button></div><small data-role="count"></small><div class="arc-drawer" data-role="drawer" hidden></div></div>';
+    const style = document.createElement('style');
+    style.textContent = `#${PANEL_ID}{position:fixed;right:16px;bottom:16px;z-index:2147483647;width:310px;max-height:calc(100vh - 32px);box-sizing:border-box;padding:12px;color:#111;background:#fff;border:2px solid #146eb4;border-radius:10px;box-shadow:0 4px 18px #0003;font:14px Arial,sans-serif}#${PANEL_ID} [hidden]{display:none !important}#${PANEL_ID} .arc-summary{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}#${PANEL_ID} [data-role=status]{display:block;margin-bottom:9px;color:#444}#${PANEL_ID} .arc-details{max-height:calc(100vh - 120px);overflow-y:auto;padding-right:3px}#${PANEL_ID} .arc-toolbar{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:7px}#${PANEL_ID} button,#${PANEL_ID} select,#${PANEL_ID} input{font:inherit;margin:0;padding:6px 9px;border:1px solid #c4cbd3;border-radius:6px;background:#f7f8fa;cursor:pointer;transition:background .15s,border-color .15s,transform .05s,box-shadow .15s}#${PANEL_ID} button:hover{filter:brightness(.97);box-shadow:0 1px 4px #0002}#${PANEL_ID} button:active{transform:translateY(1px)}#${PANEL_ID} .arc-btn{white-space:nowrap;font-size:12px;font-weight:600}#${PANEL_ID} .arc-btn em{font-size:10px;font-style:normal;opacity:.78;font-weight:400}#${PANEL_ID} .arc-btn-primary{color:#fff;background:#1769aa;border-color:#1769aa;box-shadow:0 2px 5px #1769aa44}#${PANEL_ID} .arc-btn-export{color:#fff;background:#2e7d32;border-color:#2e7d32}#${PANEL_ID} .arc-btn-export-light{color:#28632c;background:#edf7ee;border-color:#9bcaa0}#${PANEL_ID} .arc-btn-danger{color:#fff;background:#b3261e;border-color:#b3261e}#${PANEL_ID} .arc-btn-danger-light{color:#9d2424;background:#fff1f0;border-color:#e2a6a2}#${PANEL_ID} .arc-btn-more{color:#4f5965;background:#f1f3f5;border-color:#d1d7dd}#${PANEL_ID} input[type=checkbox]{vertical-align:middle}#${PANEL_ID} input[type=number]{width:50px}#${PANEL_ID} .arc-toggle{margin:0;padding:3px 7px;font-size:11px;color:#68727d;background:#fff;border-color:#d8dde3}#${PANEL_ID} small{display:block;color:#666}#${PANEL_ID} .arc-section-title{margin:13px 0 6px;color:#777;font-size:12px;font-weight:bold}#${PANEL_ID} .arc-danger{color:#9d2424}#${PANEL_ID} .arc-nav{display:grid;grid-template-columns:1fr auto;gap:2px;width:100%;margin:4px 0;padding:8px;text-align:left;background:#f7f7f7;border-color:#ddd}#${PANEL_ID} .arc-nav span{font-weight:bold}#${PANEL_ID} .arc-nav small{grid-column:1;color:#777;font-size:11px}#${PANEL_ID} .arc-nav b{grid-column:2;grid-row:1 / span 2;align-self:center;color:#777;font-size:18px}#${PANEL_ID} .arc-nav-secondary{background:#fff;border-style:dashed}#${PANEL_ID} .arc-panel-section{margin:0 0 8px;padding:8px;border:1px solid #ddd;border-top:0;border-radius:0 0 6px 6px;background:#fafafa}#${PANEL_ID} .arc-panel-section label{display:block;margin:7px 0}#${PANEL_ID} p{margin:7px 0;line-height:1.45}#${PANEL_ID} .arc-preview{line-height:1.45;word-break:break-word}#${PANEL_ID} .arc-export-fields{margin-top:8px;padding-top:7px;border-top:1px dashed #bbb}#${PANEL_ID} .arc-export-fields label{display:inline-block;width:46%;margin:4px 0}#${PANEL_ID} .arc-qr-hint{color:#666;font-size:12px}#${PANEL_ID} .arc-alipay-qr{display:block;width:180px;height:180px;margin-top:8px;background:#fff;image-rendering:pixelated}#${PANEL_ID}.arc-collapsed{width:auto;min-width:0;padding:7px 9px;border-color:#2e7d32}#${PANEL_ID}.arc-collapsed .arc-summary{display:none}#${PANEL_ID}.arc-collapsed [data-role=status]{margin:0;color:#1b5e20;font-weight:bold;cursor:pointer}#${PANEL_ID}.arc-collapsed .arc-details{display:none}`;
+    document.head.appendChild(style); document.body.appendChild(panel); renderDrawer();
+    panel.addEventListener('click', async event => {
+      const control = event.target.closest('[data-action]');
+      const action = control?.dataset.action;
+      if (action === 'toggle' || (collapsed && event.target.dataset.role === 'status')) { collapsed = !collapsed; updatePanel(); return; }
+      if (action === 'capture') await capture();
+      if (action === 'more') { const drawer = panel.querySelector('[data-role="drawer"]'); drawer.hidden = !drawer.hidden; if (!drawer.hidden) { activeSection = null; renderDrawer(); } }
+      if (action === 'toggle-section') { const target = control.dataset.target; activeSection = activeSection === target ? null : target; renderDrawer(); }
+      if (action === 'export') exportData();
+      if (action === 'export-history') exportData('history');
+      if (action === 'select-all-fields') { settings.selectedExportFields = exportFields.map(([key]) => key); await saveAll(); renderDrawer(); }
+      if (action === 'clear-fields') { settings.selectedExportFields = []; await saveAll(); renderDrawer(); }
+      if (action === 'clear' && confirm('确定清空最新记录吗？历史快照不会删除。')) { records = []; await saveAll(); updatePanel(); }
+      if (action === 'clear-history' && confirm('确定清空全部历史快照吗？')) { history = []; await saveAll(); updatePanel(); }
+      if (action === 'check-update') await checkUpdate();
+      if (action === 'export-images') await exportImages();
+      if (action === 'export-image-manifest') exportImageManifest();
+    });
+    panel.addEventListener('change', async event => {
+      const exportField = event.target.dataset.exportField;
+      if (exportField) {
+        const selected = new Set(settings.selectedExportFields);
+        if (event.target.checked) selected.add(exportField); else selected.delete(exportField);
+        settings.selectedExportFields = [...selected];
+        await saveAll();
+        return;
+      }
+      const key = event.target.dataset.setting;
+      if (!key) return;
+      settings[key] = event.target.type === 'checkbox' ? event.target.checked : key === 'retryAttempts' ? Math.max(1, Math.min(60, Number(event.target.value) || defaultSettings.retryAttempts)) : event.target.value;
+      await saveAll(); renderDrawer();
+    });
+    document.addEventListener('keydown', event => {
+      if (!settings.autoCapture && event.altKey && event.key.toLowerCase() === 'r') {
+        event.preventDefault();
+        capture();
+      }
+    }, true);
+  }
+
+  async function init() {
+    const stored = await chrome.storage.local.get({ [STORAGE_KEY]: [], [HISTORY_KEY]: [], [SETTINGS_KEY]: defaultSettings });
+    records = Array.isArray(stored[STORAGE_KEY]) ? stored[STORAGE_KEY] : [];
+    history = Array.isArray(stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
+    settings = { ...defaultSettings, ...stored[SETTINGS_KEY] };
+    createPanel();
+    if (!settings.autoCapture) return updatePanel('自动采集已关闭；请点击“重新读取”');
+    let attempts = 0;
+    const timer = setInterval(async () => { attempts += 1; if (await capture() || attempts >= settings.retryAttempts) clearInterval(timer); }, 1000);
+  }
+
+  if (document.body) init(); else document.addEventListener('DOMContentLoaded', init, { once: true });
+})();
