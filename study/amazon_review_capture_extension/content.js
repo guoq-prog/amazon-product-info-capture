@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.3.22';
+  const VERSION = '1.3.24';
   const UPDATE_URL = 'https://raw.githubusercontent.com/guoq-prog/amazon-product-info-capture/main/version.json';
   // 由 alipay.jpg 以 Python 灰度阈值提取的 41×41 二维码模块；不再依赖外部 JPG。
   const ALIPAY_QR_HEX = 'fed6ad733fc168ad3a506e898a734bb753c9afa5dbaeba7302ec1411d9cd07faaaaaaafe00ca947f00121da6e89dde7c61b55b88e92219c59f22d37b4364e40baf5a4f8a0ce8f501ba156a0496b8f3982d6006a0b26c9094c700561acbada021126633900532ba7e900057a9a30400275e88cc013c147266010070fa0c7a4fe33205ef108226ed5d21b0208b7d929f3f38a6c86610611b30dea619226f601a6119854c909e2ba952fa807e6047c47f948ad2ab504c795f514ba4e8fe2f85d6822f534ae9c044843304f0deab6afe579b25db0';
@@ -13,7 +13,7 @@
     ['asin', 'ASIN'], ['marketplace', '站点'], ['title', '标题'], ['brand', '品牌'], ['parentAsin', '父 ASIN'],
     ['rating', '星级'], ['reviewCount', '评分数量'], ['categoryPath', '类目路径'], ['bsr', 'BSR / 畅销排名'],
     ['mainImageUrl', '主图 URL'], ['imageCount', '图片数量'], ['bulletPoints', '五点描述'],
-    ['productDescription', '商品描述'], ['aPlusText', 'A+ 模块文本'], ['capturedAt', '采集时间'], ['url', '商品链接']
+    ['productDescription', '商品描述'], ['capturedAt', '采集时间'], ['url', '商品链接']
   ];
   const defaultSettings = { autoCapture: true, autoCollapse: true, retryAttempts: 20, exportFormat: 'csv', selectedExportFields: exportFields.map(([key]) => key) };
   let records = [];
@@ -108,6 +108,16 @@
     return { mainImageUrl: productImages[0] || '', imageUrls: productImages, imageCount: productImages.length };
   }
 
+  function extractAPlusImages() {
+    const root = document.querySelector('#aplus, #aplus_feature_div, #aplus3p_feature_div');
+    if (!root) return [];
+    const urls = [...root.querySelectorAll('img')].flatMap(image => [
+      ...imageUrlsFromDynamicImage(image.getAttribute('data-a-dynamic-image')),
+      highestQualityUrl(image.currentSrc || image.getAttribute('data-src') || image.src)
+    ]);
+    return unique(urls).filter(url => !/sprite|play-button|video/i.test(url));
+  }
+
   function extractParentAsin() {
     const html = document.documentElement.innerHTML;
     return html.match(/["']parentAsin["']\s*[:=]\s*["']([A-Z0-9]{10})/i)?.[1]?.toUpperCase() || '';
@@ -156,8 +166,10 @@
   function extractAPlusText() {
     return unique([...document.querySelectorAll('#aplus, #aplus_feature_div, #aplus3p_feature_div')].map(item => {
       const clone = item.cloneNode(true);
-      clone.querySelectorAll('script, style, noscript, template, svg, img, video').forEach(node => node.remove());
-      return cleanText(clone.textContent);
+      clone.querySelectorAll('script, style, noscript, template, svg, img, video, button, nav, [aria-hidden="true"], [class*="video" i], [class*="carousel" i], [class*="slider" i], [class*="modal" i], [class*="brand" i]').forEach(node => node.remove());
+      const raw = clone.innerText || clone.textContent || '';
+      const lines = raw.split(/\n+/).map(cleanText).filter(Boolean).filter(line => !/^(previous page|next page|learn more|visit the store|video player|loading|click to play|play|mute|current time|duration|stream type|seek to live|remaining time|playback rate|chapters|descriptions off|captions|this is a modal window)$/i.test(line));
+      return unique(lines).join(' ');
     })).filter(text => text.length > 0).join('\n');
   }
 
@@ -167,6 +179,7 @@
     const aggregateRating = extractJsonLd();
     const reviewElement = document.querySelector('#acrCustomerReviewText, [data-hook="total-review-count"], #averageCustomerReviews a[href*="review"]');
     const images = extractImages();
+    const aPlusImageUrls = extractAPlusImages();
     const itemDetails = extractItemDetails();
     return {
       asin, marketplace: marketplace(),
@@ -181,7 +194,7 @@
       bsr: extractBsr() || itemDetails['Best Sellers Rank'] || itemDetails['Amazon-Bestseller-Rang'] || '',
       bulletPoints: extractBullets(),
       productDescription: visibleText('#productDescription, #productDescription_feature_div'),
-      aPlusText: extractAPlusText(),
+      aPlusImageUrls,
       ...images,
       url: location.href, capturedAt: new Date().toISOString()
     };
@@ -284,8 +297,9 @@
     const record = lastRecord || collect();
     if (!record?.imageUrls?.length) return alert('当前没有可导出的商品图片');
     const files = []; const failed = [];
-    for (let i = 0; i < record.imageUrls.length; i++) {
-      try { const response = await fetch(record.imageUrls[i]); if (!response.ok) throw new Error(response.status); files.push({ name: `${i + 1}_${i === 0 ? 'main' : '副图'}.jpg`, data: new Uint8Array(await response.arrayBuffer()) }); } catch (_) { failed.push(record.imageUrls[i]); }
+    const imageItems = [...(record.imageUrls || []).map((url, i) => ({ url, name: `${i + 1}_${i === 0 ? 'main' : '副图'}.jpg` })), ...(record.aPlusImageUrls || []).map((url, i) => ({ url, name: `aplus_${i + 1}.jpg` }))];
+    for (const item of imageItems) {
+      try { const response = await fetch(item.url); if (!response.ok) throw new Error(response.status); files.push({ name: item.name, data: new Uint8Array(await response.arrayBuffer()) }); } catch (_) { failed.push(item.url); }
     }
     if (!files.length) return alert('图片服务器拒绝浏览器读取，无法生成 ZIP；可使用导出的图片 URL 清单下载。');
     const link = document.createElement('a'); link.href = URL.createObjectURL(zipBytes(files)); link.download = `amazon_images_${record.asin}.zip`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
@@ -293,7 +307,10 @@
   }
 
   function exportImageManifest() {
-    const data = records.filter(record => record.imageUrls?.length).flatMap(record => record.imageUrls.map((url, index) => ({ asin: record.asin, marketplace: record.marketplace, imageIndex: index + 1, imageType: index === 0 ? 'main' : 'secondary', imageUrl: url })));
+    const data = records.flatMap(record => [
+      ...(record.imageUrls || []).map((url, index) => ({ asin: record.asin, marketplace: record.marketplace, imageIndex: index + 1, imageType: index === 0 ? 'main' : 'secondary', imageUrl: url })),
+      ...(record.aPlusImageUrls || []).map((url, index) => ({ asin: record.asin, marketplace: record.marketplace, imageIndex: index + 1, imageType: 'aplus', imageUrl: url }))
+    ]);
     if (!data.length) return alert('没有可导出的图片 URL');
     const columns = ['asin', 'marketplace', 'imageIndex', 'imageType', 'imageUrl'];
     const quote = value => `"${String(value ?? '').replace(/"/g, '""')}"`;

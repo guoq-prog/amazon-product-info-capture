@@ -1,5 +1,5 @@
 {
-  "version": "1.3.22",
-  "notes": "增加 GitHub 检查更新；发布版 ZIP 可从仓库下载。",
+  "version": "1.3.24",
+  "notes": "移除 A+ 文本采集，改为采集 A+ 图片并支持 ZIP 导出。",
   "download": "https://github.com/guoq-prog/amazon-product-info-capture/releases/latest"
 }
