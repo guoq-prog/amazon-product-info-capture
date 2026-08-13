@@ -1,5 +1,5 @@
 {
-  "version": "1.3.30",
-  "notes": "新增批量采集队列：一次输入多个 ASIN，自动逐页采集数据和图片 URL，完成后按勾选字段统一导出。",
+  "version": "1.4.0",
+  "notes": "大版本升级：整合批量 ASIN 队列、Amazon 站点选择、逐页自动采集、失败后手动继续，以及全部图片 ZIP 导出。",
   "download": "https://github.com/guoq-prog/amazon-product-info-capture/raw/refs/heads/main/study/amazon_review_capture_extension.zip"
 }

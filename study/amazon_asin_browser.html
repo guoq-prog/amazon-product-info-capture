@@ -564,7 +564,9 @@ B0DSBX2FDP`;
     }
 
     function productUrl(asin) {
-      return `https://www.amazon.${domain()}/dp/${asin}`;
+      const selected = domain();
+      const host = selected.startsWith('amazon.') ? selected : `amazon.${selected}`;
+      return `https://www.${host}/dp/${asin}`;
     }
 
     function renderLinks() {
