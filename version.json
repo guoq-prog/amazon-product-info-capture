@@ -1,5 +1,5 @@
 {
-  "version": "1.4.04",
-  "notes": "修复队列等待目标 ASIN 时不跳转的问题；检测到页面与队列不一致会自动跳转到目标 ASIN。",
+  "version": "1.4.05",
+  "notes": "加入队列自我纠错：验证码、404、商品异常、超时和非 Amazon 页面会记录错误原因并自动继续队列。",
   "download": "https://github.com/guoq-prog/amazon-product-info-capture/raw/refs/heads/main/study/amazon_review_capture_extension.zip"
 }

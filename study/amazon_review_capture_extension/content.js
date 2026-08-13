@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.4.04';
+  const VERSION = '1.4.05';
   const UPDATE_URL = 'https://raw.githubusercontent.com/guoq-prog/amazon-product-info-capture/main/version.json';
   // 由 alipay.jpg 以 Python 灰度阈值提取的 41×41 二维码模块；不再依赖外部 JPG。
   const ALIPAY_QR_HEX = 'fed6ad733fc168ad3a506e898a734bb753c9afa5dbaeba7302ec1411d9cd07faaaaaaafe00ca947f00121da6e89dde7c61b55b88e92219c59f22d37b4364e40baf5a4f8a0ce8f501ba156a0496b8f3982d6006a0b26c9094c700561acbada021126633900532ba7e900057a9a30400275e88cc013c147266010070fa0c7a4fe33205ef108226ed5d21b0208b7d929f3f38a6c86610611b30dea619226f601a6119854c909e2ba952fa807e6047c47f948ad2ab504c795f514ba4e8fe2f85d6822f534ae9c044843304f0deab6afe579b25db0';
@@ -14,7 +14,7 @@
     ['asin', 'ASIN'], ['marketplace', '站点'], ['title', '标题'], ['brand', '品牌'], ['parentAsin', '父 ASIN'],
     ['rating', '星级'], ['reviewCount', '评分数量'], ['categoryPath', '类目路径'], ['bsr', 'BSR / 畅销排名'],
     ['mainImageUrl', '主图 URL'], ['imageCount', '图片数量'], ['bulletPoints', '五点描述'],
-    ['productDescription', '商品描述'], ['capturedAt', '采集时间'], ['url', '商品链接']
+    ['productDescription', '商品描述'], ['batchStatus', '队列状态'], ['errorReason', '错误原因'], ['capturedAt', '采集时间'], ['url', '商品链接']
   ];
   const defaultSettings = { autoCapture: true, autoCollapse: true, retryAttempts: 20, exportFormat: 'csv', selectedExportFields: exportFields.map(([key]) => key), dataFilePrefix: 'Amazon商品信息采集器', imageZipPrefix: 'Amazon商品图片', imageManifestPrefix: 'Amazon图片清单' };
   const siteOptions = ['amazon.de', 'amazon.com', 'amazon.co.uk', 'amazon.fr', 'amazon.it', 'amazon.es', 'amazon.nl', 'amazon.pl', 'amazon.se', 'amazon.ca', 'amazon.com.au', 'amazon.co.jp'];
@@ -244,6 +244,16 @@
     return [...new Set((String(value || '').toUpperCase().match(/\b[A-Z0-9]{10}\b/g) || []))];
   }
 
+  function detectPageError() {
+    if (document.querySelector('#captchacharacters, form[action*="validateCaptcha" i], input[name="field-keywords"][aria-label*="captcha" i]')) return 'Amazon 验证码页面';
+    const title = cleanText(document.title);
+    const body = cleanText(document.body?.innerText).slice(0, 12000);
+    if (/robot check|enter the characters|sorry, we just need to make sure|请证明你不是机器人|验证码/i.test(`${title} ${body}`)) return 'Amazon 验证码或机器人验证';
+    if (/page not found|商品不存在|找不到该商品|item not found|requested page could not be found|404/i.test(`${title} ${body}`)) return '商品页面不存在（404）';
+    if (/currently unavailable|currently out of stock|商品不可用|暂时缺货|unavailable/i.test(body) && !document.querySelector('#productTitle')) return '商品不可用或页面异常';
+    return '';
+  }
+
   function batchProductUrl(asin) {
     const host = batchQueue.marketplace || marketplace();
     return `https://www.${host.startsWith('amazon.') ? host : `amazon.${host}`}/dp/${asin}`;
@@ -269,6 +279,31 @@
     batchQueue = { active: false, items: [], index: 0, marketplace: '', navigating: false };
     await saveAll();
     updatePanel('批量队列已停止');
+  }
+
+  async function markBatchError(reason) {
+    if (!batchQueue.active) return false;
+    const asin = batchQueue.items[batchQueue.index];
+    if (!asin) return false;
+    const failed = { asin, marketplace: batchQueue.marketplace || marketplace(), batchStatus: 'error', errorReason: reason, url: location.href, capturedAt: new Date().toISOString() };
+    const index = records.findIndex(item => item.asin === asin && item.marketplace === failed.marketplace);
+    if (index >= 0) records[index] = { ...records[index], ...failed };
+    else records.push(failed);
+    history.push(failed);
+    batchQueue.index += 1;
+    await saveAll();
+    if (batchQueue.index >= batchQueue.items.length) {
+      batchQueue.active = false;
+      await saveAll();
+      updatePanel(`批量完成：${asin} 失败（${reason}），其余队列已处理`, true);
+      return true;
+    }
+    const next = batchQueue.items[batchQueue.index];
+    batchQueue.navigating = true;
+    await saveAll();
+    updatePanel(`已记录错误：${asin}（${reason}），继续 ${batchQueue.index + 1} / ${batchQueue.items.length}`);
+    setTimeout(() => { location.href = batchProductUrl(next); }, 800);
+    return true;
   }
 
   async function advanceBatch(record) {
@@ -308,6 +343,8 @@
   async function capture() {
     const record = collect();
     if (!record) return updatePanel('当前页面不是商品详情页');
+    const pageError = batchQueue.active ? detectPageError() : '';
+    if (pageError) { await markBatchError(pageError); return true; }
     const isQueuedRecord = batchQueue.active && batchQueue.items[batchQueue.index] === record.asin;
     if (batchQueue.active && !isQueuedRecord) {
       const expected = batchQueue.items[batchQueue.index];
@@ -322,6 +359,7 @@
     }
     const hasProductData = Boolean(record.imageUrls?.length || record.brand || record.bulletPoints || record.productDescription || (record.title && record.title !== document.title));
     if (!record.rating && !record.reviewCount && (!isQueuedRecord || !hasProductData)) return updatePanel('未读取到足够商品信息；正在等待页面加载或检查验证码');
+    if (batchQueue.active) { record.batchStatus = 'success'; record.errorReason = ''; }
     const index = records.findIndex(item => item.asin === record.asin && item.marketplace === record.marketplace);
     if (index >= 0) {
       records[index] = { ...records[index], ...record, rating: record.rating || records[index].rating, reviewCount: record.reviewCount || records[index].reviewCount };
@@ -450,7 +488,7 @@
       <button class="arc-nav arc-nav-secondary" data-action="toggle-section" data-target="help"><span>使用帮助</span><small>采集异常与字段说明</small><b>›</b></button>
       <section class="arc-panel-section arc-info" data-section="help" ${activeSection === 'help' ? '' : 'hidden'}><p>面板只在商品详情页显示。验证码、登录提示或 Cookie 页面无法读取。评分数量是 Amazon 显示的总评分数，可能包含未写文字的评分。</p></section>
       <button class="arc-nav arc-nav-secondary" data-action="toggle-section" data-target="changelog"><span>更新版本记录</span><small>当前 v${VERSION}</small><b>›</b></button>
-      <section class="arc-panel-section arc-info" data-section="changelog" ${activeSection === 'changelog' ? '' : 'hidden'}><p><b>当前版本 v${VERSION}</b></p><button data-action="check-update">检查更新</button><p>v1.4.04：检测到队列页面不一致时自动跳转到目标 ASIN。</p><p>v1.4.03：页面加载后主动触发采集，并自动纠正队列页面。</p><p>v1.4.02：延长批量页面等待时间并显示超时提示。</p></section>
+      <section class="arc-panel-section arc-info" data-section="changelog" ${activeSection === 'changelog' ? '' : 'hidden'}><p><b>当前版本 v${VERSION}</b></p><button data-action="check-update">检查更新</button><p>v1.4.05：加入队列自我纠错、错误原因记录和非 Amazon 页面监控。</p><p>v1.4.04：检测到队列页面不一致时自动跳转到目标 ASIN。</p><p>v1.4.03：页面加载后主动触发采集，并自动纠正队列页面。</p></section>
       <button class="arc-nav arc-nav-secondary" data-action="toggle-section" data-target="support"><span>♡ 打赏 / 支持作者</span><small>自愿支持，不影响功能使用</small><b>›</b></button>
       <section class="arc-panel-section arc-info" data-section="support" ${activeSection === 'support' ? '' : 'hidden'}><p>感谢使用。本扩展所有功能均可免费使用。</p><p><b>作者联系方式</b><br><a href="mailto:qing_guo2000@outlook.com">qing_guo2000@outlook.com</a><br>有任何疑问或需求可以联系。</p><p><b>支付宝打赏</b><br><span class="arc-qr-hint">请使用支付宝扫一扫</span><canvas class="arc-alipay-qr" width="196" height="196" aria-label="支付宝收款二维码"></canvas></p></section>`;
     drawAlipayQr();
@@ -511,6 +549,7 @@
     settings = { ...defaultSettings, ...stored[SETTINGS_KEY] };
     batchQueue = { ...batchQueue, ...(stored[BATCH_KEY] || {}) };
     if (batchQueue.navigating) { batchQueue.navigating = false; await chrome.storage.local.set({ [BATCH_KEY]: batchQueue }); }
+    if (batchQueue.active) chrome.runtime.sendMessage({ type: 'batch-register' }).catch(() => {});
     createPanel();
     if (!settings.autoCapture && !batchQueue.active) return updatePanel('自动采集已关闭；请点击“重新读取”');
     if (batchQueue.active) {
@@ -537,7 +576,7 @@
       if (await attempt()) clearInterval(timer);
       else if (attempts >= maxAttempts) {
         clearInterval(timer);
-        if (batchQueue.active) updatePanel(`批量采集等待超时：${batchQueue.items[batchQueue.index] || '当前 ASIN'}；处理页面后点击“重新读取”继续`);
+        if (batchQueue.active) await markBatchError('页面加载超时或疑似验证码');
       }
     }, 1000);
     // 页面完成加载后主动尝试一次，减少后台标签页定时器节流造成的等待。
