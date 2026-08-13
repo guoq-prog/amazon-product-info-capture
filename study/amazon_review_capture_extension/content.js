@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.3.24';
+  const VERSION = '1.3.25';
   const UPDATE_URL = 'https://raw.githubusercontent.com/guoq-prog/amazon-product-info-capture/main/version.json';
   // 由 alipay.jpg 以 Python 灰度阈值提取的 41×41 二维码模块；不再依赖外部 JPG。
   const ALIPAY_QR_HEX = 'fed6ad733fc168ad3a506e898a734bb753c9afa5dbaeba7302ec1411d9cd07faaaaaaafe00ca947f00121da6e89dde7c61b55b88e92219c59f22d37b4364e40baf5a4f8a0ce8f501ba156a0496b8f3982d6006a0b26c9094c700561acbada021126633900532ba7e900057a9a30400275e88cc013c147266010070fa0c7a4fe33205ef108226ed5d21b0208b7d929f3f38a6c86610611b30dea619226f601a6119854c909e2ba952fa807e6047c47f948ad2ab504c795f514ba4e8fe2f85d6822f534ae9c044843304f0deab6afe579b25db0';
@@ -15,7 +15,7 @@
     ['mainImageUrl', '主图 URL'], ['imageCount', '图片数量'], ['bulletPoints', '五点描述'],
     ['productDescription', '商品描述'], ['capturedAt', '采集时间'], ['url', '商品链接']
   ];
-  const defaultSettings = { autoCapture: true, autoCollapse: true, retryAttempts: 20, exportFormat: 'csv', selectedExportFields: exportFields.map(([key]) => key) };
+  const defaultSettings = { autoCapture: true, autoCollapse: true, retryAttempts: 20, exportFormat: 'csv', selectedExportFields: exportFields.map(([key]) => key), dataFilePrefix: 'Amazon商品信息采集器', imageZipPrefix: 'Amazon商品图片', imageManifestPrefix: 'Amazon图片清单' };
   let records = [];
   let history = [];
   let settings = { ...defaultSettings };
@@ -27,6 +27,8 @@
   const marketplace = () => location.hostname.replace(/^www\./, '');
   const numberFromText = value => cleanText(value).replace(/\u00a0/g, ' ').match(/[\d][\d.,\s']*/)?.[0].trim() || '';
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+  const safeFilePart = value => String(value || '').replace(/[\\/:*?"<>|\r\n]+/g, '_').trim() || 'Amazon商品信息采集器';
+  const today = () => new Date().toISOString().slice(0, 10);
 
   function alipayQrBits() {
     return [...ALIPAY_QR_HEX].flatMap(char => [...Number.parseInt(char, 16).toString(2).padStart(4, '0')]).slice(0, 41 * 41);
@@ -258,7 +260,7 @@
       const filtered = data.map(row => Object.fromEntries(fields.map(([key]) => [key, row[key]])));
       const link = document.createElement('a');
       link.href = URL.createObjectURL(new Blob([JSON.stringify(filtered, null, 2)], { type: 'application/json;charset=utf-8' }));
-      link.download = `amazon_rating_${kind}_${new Date().toISOString().slice(0, 10)}.json`;
+      link.download = `${safeFilePart(settings.dataFilePrefix)}_${kind}_${today()}.json`;
       link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000); return;
     }
     const columns = fields.flatMap(([key]) => key === 'bulletPoints'
@@ -271,7 +273,7 @@
     })].join('\n');
     const link = document.createElement('a');
     link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-    link.download = `amazon_rating_${kind}_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `${safeFilePart(settings.dataFilePrefix)}_${kind}_${today()}.csv`;
     link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   }
 
@@ -302,7 +304,7 @@
       try { const response = await fetch(item.url); if (!response.ok) throw new Error(response.status); files.push({ name: item.name, data: new Uint8Array(await response.arrayBuffer()) }); } catch (_) { failed.push(item.url); }
     }
     if (!files.length) return alert('图片服务器拒绝浏览器读取，无法生成 ZIP；可使用导出的图片 URL 清单下载。');
-    const link = document.createElement('a'); link.href = URL.createObjectURL(zipBytes(files)); link.download = `amazon_images_${record.asin}.zip`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    const link = document.createElement('a'); link.href = URL.createObjectURL(zipBytes(files)); link.download = `${safeFilePart(settings.imageZipPrefix)}_${record.asin}_${today()}.zip`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
     if (failed.length) alert(`已导出 ${files.length} 张图片，${failed.length} 张因跨域或服务器限制失败。`);
   }
 
@@ -315,7 +317,7 @@
     const columns = ['asin', 'marketplace', 'imageIndex', 'imageType', 'imageUrl'];
     const quote = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
     const csv = '\ufeff' + [columns.join(','), ...data.map(row => columns.map(key => quote(row[key])).join(','))].join('\n');
-    const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })); link.download = `amazon_image_manifest_${new Date().toISOString().slice(0, 10)}.csv`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })); link.download = `${safeFilePart(settings.imageManifestPrefix)}_${today()}.csv`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   }
 
   function renderDrawer() {
@@ -335,6 +337,10 @@
         <label><input type="checkbox" data-setting="autoCollapse" ${settings.autoCollapse ? 'checked' : ''}> 成功后自动缩小</label>
         <label>重试次数 <input type="number" min="1" max="60" data-setting="retryAttempts" value="${settings.retryAttempts}"></label>
         <label>导出格式 <select data-setting="exportFormat"><option value="csv" ${settings.exportFormat === 'csv' ? 'selected' : ''}>CSV</option><option value="json" ${settings.exportFormat === 'json' ? 'selected' : ''}>JSON</option></select></label>
+        <label>数据文件名前缀 <input type="text" data-setting="dataFilePrefix" value="${escapeHtml(settings.dataFilePrefix)}"></label>
+        <label>图片 ZIP 文件名前缀 <input type="text" data-setting="imageZipPrefix" value="${escapeHtml(settings.imageZipPrefix)}"></label>
+        <label>图片清单文件名前缀 <input type="text" data-setting="imageManifestPrefix" value="${escapeHtml(settings.imageManifestPrefix)}"></label>
+        <small>保存路径由浏览器下载设置决定；如需每次选择文件夹，请开启 Chrome / Edge 的“下载前询问每个文件的保存位置”。</small>
         <div class="arc-export-fields"><b>导出字段</b><button data-action="select-all-fields">全选</button><button data-action="clear-fields">清空</button>${exportFields.map(([key, label]) => `<label><input type="checkbox" data-export-field="${key}" ${selectedFields().some(([selected]) => selected === key) ? 'checked' : ''}> ${label}</label>`).join('')}</div>
       </section>
       <div class="arc-section-title">关于</div>
