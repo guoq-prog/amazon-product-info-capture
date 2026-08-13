@@ -255,7 +255,7 @@
     await saveAll();
     const current = getAsin();
     if (current === items[0]) {
-      updatePanel(`批量队列已开始：1 / ${items.length}`);
+      await capture();
       return;
     }
     location.href = batchProductUrl(items[0]);
