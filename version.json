@@ -1,5 +1,5 @@
 {
-  "version": "1.4.01",
-  "notes": "修复批量采集遇到没有星级或评分数量的商品时停止的问题；无星级页面也会保存其他信息并继续队列。",
+  "version": "1.4.03",
+  "notes": "页面加载后主动触发采集，并自动纠正队列页面，降低后台标签页停滞概率。",
   "download": "https://github.com/guoq-prog/amazon-product-info-capture/raw/refs/heads/main/study/amazon_review_capture_extension.zip"
 }
