@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Amazon 商品信息采集器（本地版）",
-  "version": "1.4.05",
-  "version_name": "v1.4.05",
+  "version": "1.4.06",
+  "version_name": "v1.4.06",
   "description": "在 Amazon 商品详情页采集商品信息、评分、图片和 Listing 内容并导出；数据仅保存在浏览器本地。",
   "permissions": ["storage", "tabs"],
   "background": { "service_worker": "background.js" },

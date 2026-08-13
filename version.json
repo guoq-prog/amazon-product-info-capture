@@ -1,5 +1,5 @@
 {
-  "version": "1.4.05",
-  "notes": "加入队列自我纠错：验证码、404、商品异常、超时和非 Amazon 页面会记录错误原因并自动继续队列。",
+  "version": "1.4.06",
+  "notes": "新增反馈邮件按钮，自动填写版本、当前页面、ASIN 和问题描述模板。",
   "download": "https://github.com/guoq-prog/amazon-product-info-capture/raw/refs/heads/main/study/amazon_review_capture_extension.zip"
 }
