@@ -1,13 +1,14 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.3.29';
+  const VERSION = '1.3.30';
   const UPDATE_URL = 'https://raw.githubusercontent.com/guoq-prog/amazon-product-info-capture/main/version.json';
   // 由 alipay.jpg 以 Python 灰度阈值提取的 41×41 二维码模块；不再依赖外部 JPG。
   const ALIPAY_QR_HEX = 'fed6ad733fc168ad3a506e898a734bb753c9afa5dbaeba7302ec1411d9cd07faaaaaaafe00ca947f00121da6e89dde7c61b55b88e92219c59f22d37b4364e40baf5a4f8a0ce8f501ba156a0496b8f3982d6006a0b26c9094c700561acbada021126633900532ba7e900057a9a30400275e88cc013c147266010070fa0c7a4fe33205ef108226ed5d21b0208b7d929f3f38a6c86610611b30dea619226f601a6119854c909e2ba952fa807e6047c47f948ad2ab504c795f514ba4e8fe2f85d6822f534ae9c044843304f0deab6afe579b25db0';
   const STORAGE_KEY = 'amazon-review-capture-extension-records-v1';
   const HISTORY_KEY = 'amazon-review-capture-extension-history-v1';
   const SETTINGS_KEY = 'amazon-review-capture-extension-settings-v1';
+  const BATCH_KEY = 'amazon-review-capture-extension-batch-v1';
   const PANEL_ID = 'amazon-review-capture-extension-panel';
   const exportFields = [
     ['asin', 'ASIN'], ['marketplace', '站点'], ['title', '标题'], ['brand', '品牌'], ['parentAsin', '父 ASIN'],
@@ -22,6 +23,7 @@
   let collapsed = false;
   let lastRecord = null;
   let activeSection = null;
+  let batchQueue = { active: false, items: [], index: 0, marketplace: '', navigating: false };
 
   const cleanText = value => (value || '').replace(/\s+/g, ' ').trim();
   const marketplace = () => location.hostname.replace(/^www\./, '');
@@ -234,7 +236,53 @@
   }
 
   async function saveAll() {
-    await chrome.storage.local.set({ [STORAGE_KEY]: records, [HISTORY_KEY]: history, [SETTINGS_KEY]: settings });
+    await chrome.storage.local.set({ [STORAGE_KEY]: records, [HISTORY_KEY]: history, [SETTINGS_KEY]: settings, [BATCH_KEY]: batchQueue });
+  }
+
+  function parseBatchAsins(value) {
+    return [...new Set((String(value || '').toUpperCase().match(/\b[A-Z0-9]{10}\b/g) || []))];
+  }
+
+  function batchProductUrl(asin) {
+    return `https://www.amazon.${batchQueue.marketplace || marketplace()}/dp/${asin}`;
+  }
+
+  async function startBatch() {
+    const input = document.querySelector('[data-batch-input]');
+    const items = parseBatchAsins(input?.value);
+    if (!items.length) return alert('请先粘贴至少一个有效 ASIN（每个 10 位）');
+    batchQueue = { active: true, items, index: 0, marketplace: marketplace(), navigating: false };
+    await saveAll();
+    const current = getAsin();
+    if (current === items[0]) {
+      updatePanel(`批量队列已开始：1 / ${items.length}`);
+      return;
+    }
+    location.href = batchProductUrl(items[0]);
+  }
+
+  async function stopBatch() {
+    batchQueue = { active: false, items: [], index: 0, marketplace: '', navigating: false };
+    await saveAll();
+    updatePanel('批量队列已停止');
+  }
+
+  async function advanceBatch(record) {
+    if (!batchQueue.active || batchQueue.navigating) return;
+    const expected = batchQueue.items[batchQueue.index];
+    if (record.asin !== expected) return;
+    batchQueue.index += 1;
+    if (batchQueue.index >= batchQueue.items.length) {
+      batchQueue.active = false;
+      await saveAll();
+      updatePanel(`√ 批量采集完成，共 ${batchQueue.items.length} 个 ASIN`, true);
+      return;
+    }
+    const next = batchQueue.items[batchQueue.index];
+    batchQueue.navigating = true;
+    await saveAll();
+    updatePanel(`√ 已读取 ${batchQueue.index} / ${batchQueue.items.length}，准备下一个…`);
+    setTimeout(() => { location.href = batchProductUrl(next); }, 1200);
   }
 
   function selectedFields() {
@@ -268,6 +316,7 @@
     history.push({ ...lastRecord, capturedAt: record.capturedAt });
     await saveAll();
     updatePanel('√ 已成功读取', true);
+    await advanceBatch(lastRecord);
     return true;
   }
 
@@ -327,15 +376,19 @@
   }
 
   async function exportImages() {
-    const record = lastRecord || collect();
-    if (!record?.imageUrls?.length) return alert('当前没有可导出的商品图片');
+    const current = lastRecord || collect();
+    const imageRecords = records.length ? records : (current ? [current] : []);
+    if (!imageRecords.some(record => record?.imageUrls?.length || record?.aPlusImageUrls?.length)) return alert('当前没有可导出的商品图片');
     const files = []; const failed = [];
-    const imageItems = [...(record.imageUrls || []).map((url, i) => ({ url, name: `${i + 1}_${i === 0 ? 'main' : '副图'}.jpg` })), ...(record.aPlusImageUrls || []).map((url, i) => ({ url, name: `aplus_${i + 1}.jpg` }))];
+    const imageItems = imageRecords.flatMap(record => [
+      ...(record.imageUrls || []).map((url, i) => ({ url, name: `${safeFilePart(record.asin)}/${String(i + 1).padStart(2, '0')}_${i === 0 ? 'main' : 'secondary'}.jpg` })),
+      ...(record.aPlusImageUrls || []).map((url, i) => ({ url, name: `${safeFilePart(record.asin)}/aplus_${String(i + 1).padStart(2, '0')}.jpg` }))
+    ]);
     for (const item of imageItems) {
       try { const response = await fetch(item.url); if (!response.ok) throw new Error(response.status); files.push({ name: item.name, data: new Uint8Array(await response.arrayBuffer()) }); } catch (_) { failed.push(item.url); }
     }
     if (!files.length) return alert('图片服务器拒绝浏览器读取，无法生成 ZIP；可使用导出的图片 URL 清单下载。');
-    const link = document.createElement('a'); link.href = URL.createObjectURL(zipBytes(files)); link.download = `${safeFilePart(settings.imageZipPrefix)}_${record.asin}_${today()}.zip`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    const link = document.createElement('a'); link.href = URL.createObjectURL(zipBytes(files)); link.download = `${safeFilePart(settings.imageZipPrefix)}_${imageRecords.length}个ASIN_${today()}.zip`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
     if (failed.length) alert(`已导出 ${files.length} 张图片，${failed.length} 张因跨域或服务器限制失败。`);
   }
 
@@ -357,10 +410,12 @@
     const record = lastRecord || collect();
     drawer.innerHTML = `
       <div class="arc-section-title">常用</div>
+      <button class="arc-nav" data-action="toggle-section" data-target="batch"><span>批量采集队列</span><small>${batchQueue.active ? `进行中：${Math.min(batchQueue.index + 1, batchQueue.items.length)} / ${batchQueue.items.length}` : '一次输入多个 ASIN，自动逐页采集'}</small><b>›</b></button>
+      <section class="arc-panel-section" data-section="batch" ${activeSection === 'batch' ? '' : 'hidden'}><textarea data-batch-input rows="5" placeholder="粘贴多个 ASIN、Amazon 链接或混合文本">${escapeHtml(batchQueue.items.join('\n'))}</textarea><small>当前站点：${escapeHtml(marketplace())}。采集成功后自动打开下一个页面，数据和图片 URL 会保存到现有记录。</small><button data-action="start-batch">▶ 开始 / 重置队列</button><button data-action="stop-batch">■ 停止队列</button>${batchQueue.active ? `<p class="arc-batch-progress">正在采集第 ${Math.min(batchQueue.index + 1, batchQueue.items.length)} / ${batchQueue.items.length} 个：${escapeHtml(batchQueue.items[batchQueue.index] || '已完成')}</p>` : ''}</section>
       <button class="arc-nav" data-action="toggle-section" data-target="preview"><span>本页数据预览</span><small>查看刚采集的字段</small><b>›</b></button>
       <section class="arc-panel-section" data-section="preview" ${activeSection === 'preview' ? '' : 'hidden'}><div class="arc-preview">${record ? `ASIN：${escapeHtml(record.asin)}<br>品牌：${escapeHtml(record.brand || '未读取')}<br>父 ASIN：${escapeHtml(record.parentAsin || '未读取')}<br>星级：${escapeHtml(record.rating || '未读取')}<br>评分数量：${escapeHtml(record.reviewCount || '未读取')}<br>类目：${escapeHtml(record.categoryPath || '未读取')}<br>BSR：${escapeHtml(record.bsr || '未读取')}<br>图片：${record.imageCount || 0} 张${record.mainImageUrl ? `<br><a href="${escapeHtml(record.mainImageUrl)}" target="_blank" rel="noreferrer">打开主图（最大公开规格）</a>` : ''}` : '尚未成功读取本页数据'}</div></section>
       <button class="arc-nav" data-action="toggle-section" data-target="data"><span>导出与数据</span><small>导出、清空和历史快照</small><b>›</b></button>
-      <section class="arc-panel-section" data-section="data" ${activeSection === 'data' ? '' : 'hidden'}><button data-action="export-images">导出图片 ZIP</button><button data-action="export-image-manifest">导出图片清单 CSV</button></section>
+      <section class="arc-panel-section" data-section="data" ${activeSection === 'data' ? '' : 'hidden'}><button data-action="export-images">导出全部图片 ZIP</button><button data-action="export-image-manifest">导出全部图片清单 CSV</button></section>
       <div class="arc-section-title">设置</div>
       <button class="arc-nav" data-action="toggle-section" data-target="settings"><span>⚙ 功能设置</span><small>采集、折叠、重试、导出字段</small><b>›</b></button>
       <section class="arc-panel-section" data-section="settings" ${activeSection === 'settings' ? '' : 'hidden'}>
@@ -396,6 +451,8 @@
       const action = control?.dataset.action;
       if (action === 'toggle' || (collapsed && event.target.dataset.role === 'status')) { collapsed = !collapsed; updatePanel(); return; }
       if (action === 'capture') await capture();
+      if (action === 'start-batch') await startBatch();
+      if (action === 'stop-batch') await stopBatch();
       if (action === 'more') { const drawer = panel.querySelector('[data-role="drawer"]'); drawer.hidden = !drawer.hidden; if (!drawer.hidden) { activeSection = null; renderDrawer(); } }
       if (action === 'toggle-section') { const target = control.dataset.target; activeSection = activeSection === target ? null : target; renderDrawer(); }
       if (action === 'export') exportData();
@@ -431,12 +488,14 @@
   }
 
   async function init() {
-    const stored = await chrome.storage.local.get({ [STORAGE_KEY]: [], [HISTORY_KEY]: [], [SETTINGS_KEY]: defaultSettings });
+    const stored = await chrome.storage.local.get({ [STORAGE_KEY]: [], [HISTORY_KEY]: [], [SETTINGS_KEY]: defaultSettings, [BATCH_KEY]: batchQueue });
     records = Array.isArray(stored[STORAGE_KEY]) ? stored[STORAGE_KEY] : [];
     history = Array.isArray(stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
     settings = { ...defaultSettings, ...stored[SETTINGS_KEY] };
+    batchQueue = { ...batchQueue, ...(stored[BATCH_KEY] || {}) };
+    if (batchQueue.navigating) { batchQueue.navigating = false; await chrome.storage.local.set({ [BATCH_KEY]: batchQueue }); }
     createPanel();
-    if (!settings.autoCapture) return updatePanel('自动采集已关闭；请点击“重新读取”');
+    if (!settings.autoCapture && !batchQueue.active) return updatePanel('自动采集已关闭；请点击“重新读取”');
     let attempts = 0;
     const timer = setInterval(async () => { attempts += 1; if (await capture() || attempts >= settings.retryAttempts) clearInterval(timer); }, 1000);
   }
