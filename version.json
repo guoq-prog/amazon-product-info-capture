@@ -1,5 +1,5 @@
 {
-  "version": "1.4.06",
-  "notes": "新增反馈邮件按钮，自动填写版本、当前页面、ASIN 和问题描述模板。",
+  "version": "1.4.07",
+  "notes": "统一采集判断标准：识别到 ASIN 且读取到标题、图片、品牌、五点或商品描述即可保存，星级和评分数为可选字段。",
   "download": "https://github.com/guoq-prog/amazon-product-info-capture/raw/refs/heads/main/study/amazon_review_capture_extension.zip"
 }

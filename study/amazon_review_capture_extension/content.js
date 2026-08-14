@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.4.06';
+  const VERSION = '1.4.07';
   const UPDATE_URL = 'https://raw.githubusercontent.com/guoq-prog/amazon-product-info-capture/main/version.json';
   // 由 alipay.jpg 以 Python 灰度阈值提取的 41×41 二维码模块；不再依赖外部 JPG。
   const ALIPAY_QR_HEX = 'fed6ad733fc168ad3a506e898a734bb753c9afa5dbaeba7302ec1411d9cd07faaaaaaafe00ca947f00121da6e89dde7c61b55b88e92219c59f22d37b4364e40baf5a4f8a0ce8f501ba156a0496b8f3982d6006a0b26c9094c700561acbada021126633900532ba7e900057a9a30400275e88cc013c147266010070fa0c7a4fe33205ef108226ed5d21b0208b7d929f3f38a6c86610611b30dea619226f601a6119854c909e2ba952fa807e6047c47f948ad2ab504c795f514ba4e8fe2f85d6822f534ae9c044843304f0deab6afe579b25db0';
@@ -358,8 +358,8 @@
       updatePanel(`队列等待目标 ASIN：${batchQueue.items[batchQueue.index] || '已完成'}`);
       return false;
     }
-    const hasProductData = Boolean(record.imageUrls?.length || record.brand || record.bulletPoints || record.productDescription || (record.title && record.title !== document.title));
-    if (!record.rating && !record.reviewCount && (!isQueuedRecord || !hasProductData)) return updatePanel('未读取到足够商品信息；正在等待页面加载或检查验证码');
+    const hasProductData = Boolean(document.querySelector('#productTitle, h1[data-automation-id="title"]') || record.imageUrls?.length || record.brand || record.bulletPoints || record.productDescription);
+    if (!hasProductData) return updatePanel('未读取到足够商品信息；正在等待页面加载或检查验证码');
     if (batchQueue.active) { record.batchStatus = 'success'; record.errorReason = ''; }
     const index = records.findIndex(item => item.asin === record.asin && item.marketplace === record.marketplace);
     if (index >= 0) {
@@ -489,7 +489,7 @@
       <button class="arc-nav arc-nav-secondary" data-action="toggle-section" data-target="help"><span>使用帮助</span><small>采集异常与字段说明</small><b>›</b></button>
       <section class="arc-panel-section arc-info" data-section="help" ${activeSection === 'help' ? '' : 'hidden'}><p>面板只在商品详情页显示。验证码、登录提示或 Cookie 页面无法读取。评分数量是 Amazon 显示的总评分数，可能包含未写文字的评分。</p></section>
       <button class="arc-nav arc-nav-secondary" data-action="toggle-section" data-target="changelog"><span>更新版本记录</span><small>当前 v${VERSION}</small><b>›</b></button>
-      <section class="arc-panel-section arc-info" data-section="changelog" ${activeSection === 'changelog' ? '' : 'hidden'}><p><b>当前版本 v${VERSION}</b></p><button data-action="check-update">检查更新</button><p>v1.4.06：新增反馈邮件按钮，自动填写版本、页面和 ASIN 信息。</p><p>v1.4.05：加入队列自我纠错、错误原因记录和非 Amazon 页面监控。</p><p>v1.4.04：检测到队列页面不一致时自动跳转到目标 ASIN。</p></section>
+      <section class="arc-panel-section arc-info" data-section="changelog" ${activeSection === 'changelog' ? '' : 'hidden'}><p><b>当前版本 v${VERSION}</b></p><button data-action="check-update">检查更新</button><p>v1.4.07：统一采集判断标准，无星级商品也会保存其他有效商品信息。</p><p>v1.4.06：新增反馈邮件按钮，自动填写版本、页面和 ASIN 信息。</p><p>v1.4.05：加入队列自我纠错、错误原因记录和非 Amazon 页面监控。</p></section>
       <button class="arc-nav arc-nav-secondary" data-action="toggle-section" data-target="support"><span>♡ 打赏 / 支持作者</span><small>自愿支持，不影响功能使用</small><b>›</b></button>
       <section class="arc-panel-section arc-info" data-section="support" ${activeSection === 'support' ? '' : 'hidden'}><p>感谢使用。本扩展所有功能均可免费使用。</p><p><b>作者联系方式</b><br><a href="mailto:qing_guo2000@outlook.com">qing_guo2000@outlook.com</a><br><a href="${feedbackMailto()}">✉ 发送反馈邮件（自动填写模板）</a><br>有任何疑问或需求可以联系。</p><p><b>支付宝打赏</b><br><span class="arc-qr-hint">请使用支付宝扫一扫</span><canvas class="arc-alipay-qr" width="196" height="196" aria-label="支付宝收款二维码"></canvas></p></section>`;
     drawAlipayQr();
