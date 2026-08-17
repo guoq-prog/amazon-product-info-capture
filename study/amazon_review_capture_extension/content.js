@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.4.07';
+  const VERSION = '1.4.08';
   const UPDATE_URL = 'https://raw.githubusercontent.com/guoq-prog/amazon-product-info-capture/main/version.json';
   // 由 alipay.jpg 以 Python 灰度阈值提取的 41×41 二维码模块；不再依赖外部 JPG。
   const ALIPAY_QR_HEX = 'fed6ad733fc168ad3a506e898a734bb753c9afa5dbaeba7302ec1411d9cd07faaaaaaafe00ca947f00121da6e89dde7c61b55b88e92219c59f22d37b4364e40baf5a4f8a0ce8f501ba156a0496b8f3982d6006a0b26c9094c700561acbada021126633900532ba7e900057a9a30400275e88cc013c147266010070fa0c7a4fe33205ef108226ed5d21b0208b7d929f3f38a6c86610611b30dea619226f601a6119854c909e2ba952fa807e6047c47f948ad2ab504c795f514ba4e8fe2f85d6822f534ae9c044843304f0deab6afe579b25db0';
@@ -11,7 +11,7 @@
   const BATCH_KEY = 'amazon-review-capture-extension-batch-v1';
   const PANEL_ID = 'amazon-review-capture-extension-panel';
   const exportFields = [
-    ['asin', 'ASIN'], ['marketplace', '站点'], ['title', '标题'], ['brand', '品牌'], ['parentAsin', '父 ASIN'],
+    ['asin', 'ASIN'], ['marketplace', '站点'], ['title', '标题'], ['brand', '品牌'], ['color', '颜色'], ['parentAsin', '父 ASIN'],
     ['rating', '星级'], ['reviewCount', '评分数量'], ['categoryPath', '类目路径'], ['bsr', 'BSR / 畅销排名'],
     ['mainImageUrl', '主图 URL'], ['imageCount', '图片数量'], ['bulletPoints', '五点描述'],
     ['productDescription', '商品描述'], ['batchStatus', '队列状态'], ['errorReason', '错误原因'], ['capturedAt', '采集时间'], ['url', '商品链接']
@@ -166,6 +166,20 @@
     return unique(values).join(' | ');
   }
 
+  function extractColor(itemDetails = {}) {
+    const detailKey = Object.keys(itemDetails).find(key => /^(?:color|colour|farbe|couleur|colore|カラー|颜色|顏色)$/i.test(key));
+    if (detailKey && itemDetails[detailKey]) return cleanText(itemDetails[detailKey]);
+    const variation = [...document.querySelectorAll('[id^="variation_"]')].find(node => /color|colour|farbe|couleur|colore|カラー|颜色|顏色/i.test(cleanText(node.querySelector('label, .a-form-label, .a-row')?.textContent || node.id)));
+    const selected = variation?.querySelector('.selection, .a-dropdown-prompt, [aria-checked="true"], [data-csa-c-item-id][aria-selected="true"]');
+    const selectedText = cleanText(selected?.getAttribute('aria-label') || selected?.getAttribute('title') || selected?.textContent);
+    if (selectedText) return selectedText.replace(/^(?:color|colour|farbe|couleur|colore|カラー|颜色|顏色)\s*[:：-]?\s*/i, '').trim();
+    const swatch = document.querySelector('[id*="color" i] li[aria-checked="true"], [id*="color" i] [aria-selected="true"], [data-csa-c-content-id*="color" i] [aria-checked="true"]');
+    const swatchText = cleanText(swatch?.getAttribute('aria-label') || swatch?.getAttribute('title') || swatch?.textContent);
+    if (swatchText) return swatchText.replace(/^(?:color|colour|farbe|couleur|colore|カラー|颜色|顏色)\s*[:：-]?\s*/i, '').trim();
+    const htmlColor = document.documentElement.innerHTML.match(/["']color["']\s*[:=]\s*["']([^"']{1,100})["']/i)?.[1];
+    return cleanText(htmlColor);
+  }
+
   function extractCategoryPath() {
     return unique([...document.querySelectorAll('#wayfinding-breadcrumbs_feature_div a, #wayfinding-breadcrumbs_container a')].map(link => cleanText(link.textContent))).join(' > ');
   }
@@ -222,6 +236,7 @@
       asin, marketplace: marketplace(),
       title: cleanText(document.querySelector('#productTitle, h1[data-automation-id="title"]')?.textContent || document.title),
       brand: itemDetails.Brand || itemDetails.Marke || itemDetails['Brand Name'] || cleanText(document.querySelector('#bylineInfo, #brand')?.textContent).replace(/^(?:Visit the|Brand:|Marke:|品牌：)\s*/i, '').replace(/\s+Store$/i, ''),
+      color: extractColor(itemDetails),
       parentAsin: extractParentAsin(),
       selectedVariants: extractVariants(),
       rating: extractRating() || cleanText(aggregateRating.ratingValue),
@@ -469,7 +484,7 @@
       <button class="arc-nav" data-action="toggle-section" data-target="batch"><span>批量采集队列</span><small>${batchQueue.active ? `进行中：${Math.min(batchQueue.index + 1, batchQueue.items.length)} / ${batchQueue.items.length}` : '一次输入多个 ASIN，自动逐页采集'}</small><b>›</b></button>
       <section class="arc-panel-section" data-section="batch" ${activeSection === 'batch' ? '' : 'hidden'}><label>目标站点 <select data-batch-site>${siteOptions.map(site => `<option value="${site}" ${(batchQueue.marketplace || marketplace()) === site ? 'selected' : ''}>${site}</option>`).join('')}</select></label><textarea data-batch-input rows="5" placeholder="粘贴多个 ASIN、Amazon 链接或混合文本">${escapeHtml(batchQueue.items.join('\n'))}</textarea><small>采集成功后自动打开下一个页面，数据和图片 URL 会保存到现有记录。</small><button data-action="start-batch">▶ 开始 / 重置队列</button><button data-action="stop-batch">■ 停止队列</button>${batchQueue.active ? `<p class="arc-batch-progress">正在采集第 ${Math.min(batchQueue.index + 1, batchQueue.items.length)} / ${batchQueue.items.length} 个：${escapeHtml(batchQueue.items[batchQueue.index] || '已完成')}</p>` : ''}</section>
       <button class="arc-nav" data-action="toggle-section" data-target="preview"><span>本页数据预览</span><small>查看刚采集的字段</small><b>›</b></button>
-      <section class="arc-panel-section" data-section="preview" ${activeSection === 'preview' ? '' : 'hidden'}><div class="arc-preview">${record ? `ASIN：${escapeHtml(record.asin)}<br>品牌：${escapeHtml(record.brand || '未读取')}<br>父 ASIN：${escapeHtml(record.parentAsin || '未读取')}<br>星级：${escapeHtml(record.rating || '未读取')}<br>评分数量：${escapeHtml(record.reviewCount || '未读取')}<br>类目：${escapeHtml(record.categoryPath || '未读取')}<br>BSR：${escapeHtml(record.bsr || '未读取')}<br>图片：${record.imageCount || 0} 张${record.mainImageUrl ? `<br><a href="${escapeHtml(record.mainImageUrl)}" target="_blank" rel="noreferrer">打开主图（最大公开规格）</a>` : ''}` : '尚未成功读取本页数据'}</div></section>
+      <section class="arc-panel-section" data-section="preview" ${activeSection === 'preview' ? '' : 'hidden'}><div class="arc-preview">${record ? `ASIN：${escapeHtml(record.asin)}<br>品牌：${escapeHtml(record.brand || '未读取')}<br>颜色：${escapeHtml(record.color || '未读取')}<br>父 ASIN：${escapeHtml(record.parentAsin || '未读取')}<br>星级：${escapeHtml(record.rating || '未读取')}<br>评分数量：${escapeHtml(record.reviewCount || '未读取')}<br>类目：${escapeHtml(record.categoryPath || '未读取')}<br>BSR：${escapeHtml(record.bsr || '未读取')}<br>图片：${record.imageCount || 0} 张${record.mainImageUrl ? `<br><a href="${escapeHtml(record.mainImageUrl)}" target="_blank" rel="noreferrer">打开主图（最大公开规格）</a>` : ''}` : '尚未成功读取本页数据'}</div></section>
       <button class="arc-nav" data-action="toggle-section" data-target="data"><span>导出与数据</span><small>导出、清空和历史快照</small><b>›</b></button>
       <section class="arc-panel-section" data-section="data" ${activeSection === 'data' ? '' : 'hidden'}><button data-action="export-images">导出全部图片 ZIP</button><button data-action="export-image-manifest">导出全部图片清单 CSV</button></section>
       <div class="arc-section-title">设置</div>
@@ -489,7 +504,7 @@
       <button class="arc-nav arc-nav-secondary" data-action="toggle-section" data-target="help"><span>使用帮助</span><small>采集异常与字段说明</small><b>›</b></button>
       <section class="arc-panel-section arc-info" data-section="help" ${activeSection === 'help' ? '' : 'hidden'}><p>面板只在商品详情页显示。验证码、登录提示或 Cookie 页面无法读取。评分数量是 Amazon 显示的总评分数，可能包含未写文字的评分。</p></section>
       <button class="arc-nav arc-nav-secondary" data-action="toggle-section" data-target="changelog"><span>更新版本记录</span><small>当前 v${VERSION}</small><b>›</b></button>
-      <section class="arc-panel-section arc-info" data-section="changelog" ${activeSection === 'changelog' ? '' : 'hidden'}><p><b>当前版本 v${VERSION}</b></p><button data-action="check-update">检查更新</button><p>v1.4.07：统一采集判断标准，无星级商品也会保存其他有效商品信息。</p><p>v1.4.06：新增反馈邮件按钮，自动填写版本、页面和 ASIN 信息。</p><p>v1.4.05：加入队列自我纠错、错误原因记录和非 Amazon 页面监控。</p></section>
+      <section class="arc-panel-section arc-info" data-section="changelog" ${activeSection === 'changelog' ? '' : 'hidden'}><p><b>当前版本 v${VERSION}</b></p><button data-action="check-update">检查更新</button><p>v1.4.08：新增颜色数据采集并加入导出字段。</p><p>v1.4.07：统一采集判断标准，无星级商品也会保存其他有效商品信息。</p><p>v1.4.06：新增反馈邮件按钮，自动填写版本、页面和 ASIN 信息。</p></section>
       <button class="arc-nav arc-nav-secondary" data-action="toggle-section" data-target="support"><span>♡ 打赏 / 支持作者</span><small>自愿支持，不影响功能使用</small><b>›</b></button>
       <section class="arc-panel-section arc-info" data-section="support" ${activeSection === 'support' ? '' : 'hidden'}><p>感谢使用。本扩展所有功能均可免费使用。</p><p><b>作者联系方式</b><br><a href="mailto:qing_guo2000@outlook.com">qing_guo2000@outlook.com</a><br><a href="${feedbackMailto()}">✉ 发送反馈邮件（自动填写模板）</a><br>有任何疑问或需求可以联系。</p><p><b>支付宝打赏</b><br><span class="arc-qr-hint">请使用支付宝扫一扫</span><canvas class="arc-alipay-qr" width="196" height="196" aria-label="支付宝收款二维码"></canvas></p></section>`;
     drawAlipayQr();

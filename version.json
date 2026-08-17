@@ -1,5 +1,5 @@
 {
-  "version": "1.4.07",
-  "notes": "统一采集判断标准：识别到 ASIN 且读取到标题、图片、品牌、五点或商品描述即可保存，星级和评分数为可选字段。",
+  "version": "1.4.08",
+  "notes": "新增颜色数据采集：从商品详情表、颜色变体选择器和页面结构化数据读取，并支持勾选导出。",
   "download": "https://github.com/guoq-prog/amazon-product-info-capture/raw/refs/heads/main/study/amazon_review_capture_extension.zip"
 }
