@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.4.08';
+  const VERSION = '1.4.09';
   const UPDATE_URL = 'https://raw.githubusercontent.com/guoq-prog/amazon-product-info-capture/main/version.json';
   // 由 alipay.jpg 以 Python 灰度阈值提取的 41×41 二维码模块；不再依赖外部 JPG。
   const ALIPAY_QR_HEX = 'fed6ad733fc168ad3a506e898a734bb753c9afa5dbaeba7302ec1411d9cd07faaaaaaafe00ca947f00121da6e89dde7c61b55b88e92219c59f22d37b4364e40baf5a4f8a0ce8f501ba156a0496b8f3982d6006a0b26c9094c700561acbada021126633900532ba7e900057a9a30400275e88cc013c147266010070fa0c7a4fe33205ef108226ed5d21b0208b7d929f3f38a6c86610611b30dea619226f601a6119854c909e2ba952fa807e6047c47f948ad2ab504c795f514ba4e8fe2f85d6822f534ae9c044843304f0deab6afe579b25db0';
@@ -167,8 +167,16 @@
   }
 
   function extractColor(itemDetails = {}) {
-    const detailKey = Object.keys(itemDetails).find(key => /^(?:color|colour|farbe|couleur|colore|カラー|颜色|顏色)$/i.test(key));
+    const detailKey = Object.keys(itemDetails).find(key => /^(?:color|colour|farbe|couleur|colore|カラー|颜色|顏色)$/i.test(cleanText(key)));
     if (detailKey && itemDetails[detailKey]) return cleanText(itemDetails[detailKey]);
+    const detailRows = [...document.querySelectorAll('#productDetails_detailBullets_sections1 tr, #productDetails_techSpec_section_1 tr, #detailBullets_feature_div li, #prodDetails tr')];
+    for (const row of detailRows) {
+      const cells = [...row.querySelectorAll('th, td, .a-color-secondary, .a-span3, .a-span9')].map(cell => cleanText(cell.textContent)).filter(Boolean);
+      if (cells.length >= 2 && /^(?:color|colour|farbe|couleur|colore|カラー|颜色|顏色)$/i.test(cells[0].replace(/[:：]$/, '').trim())) return cells.slice(1).join(' ');
+      const text = cleanText(row.textContent);
+      const match = text.match(/^(?:color|colour|farbe|couleur|colore|カラー|颜色|顏色)\s*[:：]?\s*(.+)$/i);
+      if (match?.[1]) return cleanText(match[1]);
+    }
     const variation = [...document.querySelectorAll('[id^="variation_"]')].find(node => /color|colour|farbe|couleur|colore|カラー|颜色|顏色/i.test(cleanText(node.querySelector('label, .a-form-label, .a-row')?.textContent || node.id)));
     const selected = variation?.querySelector('.selection, .a-dropdown-prompt, [aria-checked="true"], [data-csa-c-item-id][aria-selected="true"]');
     const selectedText = cleanText(selected?.getAttribute('aria-label') || selected?.getAttribute('title') || selected?.textContent);
@@ -563,6 +571,7 @@
     records = Array.isArray(stored[STORAGE_KEY]) ? stored[STORAGE_KEY] : [];
     history = Array.isArray(stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
     settings = { ...defaultSettings, ...stored[SETTINGS_KEY] };
+    if (Array.isArray(settings.selectedExportFields) && !settings.selectedExportFields.includes('color')) settings.selectedExportFields = [...settings.selectedExportFields, 'color'];
     batchQueue = { ...batchQueue, ...(stored[BATCH_KEY] || {}) };
     if (batchQueue.navigating) { batchQueue.navigating = false; await chrome.storage.local.set({ [BATCH_KEY]: batchQueue }); }
     if (batchQueue.active) chrome.runtime.sendMessage({ type: 'batch-register' }).catch(() => {});

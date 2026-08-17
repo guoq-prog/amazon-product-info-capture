@@ -1,5 +1,5 @@
 {
-  "version": "1.4.08",
-  "notes": "新增颜色数据采集：从商品详情表、颜色变体选择器和页面结构化数据读取，并支持勾选导出。",
+  "version": "1.4.09",
+  "notes": "增强 Colour/颜色详情表解析，并自动将颜色加入已有用户的导出字段设置。",
   "download": "https://github.com/guoq-prog/amazon-product-info-capture/raw/refs/heads/main/study/amazon_review_capture_extension.zip"
 }
