@@ -1,5 +1,5 @@
 {
-  "version": "1.4.10",
-  "notes": "修复父子变体自动重定向造成的队列死循环；连续重定向会记录错误并自动继续下一个 ASIN。",
+  "version": "1.4.11",
+  "notes": "新增批量队列暂停 / 继续；暂停时保留当前进度，不再自动刷新或跳转页面。",
   "download": "https://github.com/guoq-prog/amazon-product-info-capture/raw/refs/heads/main/study/amazon_review_capture_extension.zip"
 }

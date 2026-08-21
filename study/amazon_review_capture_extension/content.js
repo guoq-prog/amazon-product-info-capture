@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.4.10';
+  const VERSION = '1.4.11';
   const UPDATE_URL = 'https://raw.githubusercontent.com/guoq-prog/amazon-product-info-capture/main/version.json';
   // 由 alipay.jpg 以 Python 灰度阈值提取的 41×41 二维码模块；不再依赖外部 JPG。
   const ALIPAY_QR_HEX = 'fed6ad733fc168ad3a506e898a734bb753c9afa5dbaeba7302ec1411d9cd07faaaaaaafe00ca947f00121da6e89dde7c61b55b88e92219c59f22d37b4364e40baf5a4f8a0ce8f501ba156a0496b8f3982d6006a0b26c9094c700561acbada021126633900532ba7e900057a9a30400275e88cc013c147266010070fa0c7a4fe33205ef108226ed5d21b0208b7d929f3f38a6c86610611b30dea619226f601a6119854c909e2ba952fa807e6047c47f948ad2ab504c795f514ba4e8fe2f85d6822f534ae9c044843304f0deab6afe579b25db0';
@@ -24,7 +24,7 @@
   let collapsed = false;
   let lastRecord = null;
   let activeSection = null;
-  let batchQueue = { active: false, items: [], index: 0, marketplace: '', navigating: false, redirectAttempts: 0 };
+  let batchQueue = { active: false, paused: false, items: [], index: 0, marketplace: '', navigating: false, redirectAttempts: 0 };
 
   const cleanText = value => (value || '').replace(/\s+/g, ' ').trim();
   const marketplace = () => location.hostname.replace(/^www\./, '');
@@ -289,7 +289,7 @@
     if (!items.length) return alert('请先粘贴至少一个有效 ASIN（每个 10 位）');
     const site = document.querySelector('[data-batch-site]')?.value || marketplace();
     if (!siteOptions.includes(site)) return alert('请选择有效的 Amazon 站点');
-    batchQueue = { active: true, items, index: 0, marketplace: site, navigating: false, redirectAttempts: 0 };
+    batchQueue = { active: true, paused: false, items, index: 0, marketplace: site, navigating: false, redirectAttempts: 0 };
     await saveAll();
     const current = getAsin();
     if (current === items[0]) {
@@ -300,7 +300,7 @@
   }
 
   async function stopBatch() {
-    batchQueue = { active: false, items: [], index: 0, marketplace: '', navigating: false, redirectAttempts: 0 };
+    batchQueue = { active: false, paused: false, items: [], index: 0, marketplace: '', navigating: false, redirectAttempts: 0 };
     await saveAll();
     updatePanel('批量队列已停止');
   }
@@ -331,8 +331,17 @@
     return true;
   }
 
+  async function toggleBatchPause() {
+    if (!batchQueue.active) return alert('当前没有正在运行的批量队列');
+    batchQueue.paused = !batchQueue.paused;
+    batchQueue.navigating = false;
+    await saveAll();
+    updatePanel(batchQueue.paused ? '批量队列已暂停，不会继续刷新页面' : '批量队列已继续运行');
+    if (!batchQueue.paused) setTimeout(() => capture(), 300);
+  }
+
   async function advanceBatch(record) {
-    if (!batchQueue.active || batchQueue.navigating) return;
+    if (!batchQueue.active || batchQueue.paused || batchQueue.navigating) return;
     const expected = batchQueue.items[batchQueue.index];
     if (record.asin !== expected) return;
     batchQueue.index += 1;
@@ -501,7 +510,7 @@
     drawer.innerHTML = `
       <div class="arc-section-title">常用</div>
       <button class="arc-nav" data-action="toggle-section" data-target="batch"><span>批量采集队列</span><small>${batchQueue.active ? `进行中：${Math.min(batchQueue.index + 1, batchQueue.items.length)} / ${batchQueue.items.length}` : '一次输入多个 ASIN，自动逐页采集'}</small><b>›</b></button>
-      <section class="arc-panel-section" data-section="batch" ${activeSection === 'batch' ? '' : 'hidden'}><label>目标站点 <select data-batch-site>${siteOptions.map(site => `<option value="${site}" ${(batchQueue.marketplace || marketplace()) === site ? 'selected' : ''}>${site}</option>`).join('')}</select></label><textarea data-batch-input rows="5" placeholder="粘贴多个 ASIN、Amazon 链接或混合文本">${escapeHtml(batchQueue.items.join('\n'))}</textarea><small>采集成功后自动打开下一个页面，数据和图片 URL 会保存到现有记录。</small><button data-action="start-batch">▶ 开始 / 重置队列</button><button data-action="stop-batch">■ 停止队列</button>${batchQueue.active ? `<p class="arc-batch-progress">正在采集第 ${Math.min(batchQueue.index + 1, batchQueue.items.length)} / ${batchQueue.items.length} 个：${escapeHtml(batchQueue.items[batchQueue.index] || '已完成')}</p>` : ''}</section>
+      <section class="arc-panel-section" data-section="batch" ${activeSection === 'batch' ? '' : 'hidden'}><label>目标站点 <select data-batch-site>${siteOptions.map(site => `<option value="${site}" ${(batchQueue.marketplace || marketplace()) === site ? 'selected' : ''}>${site}</option>`).join('')}</select></label><textarea data-batch-input rows="5" placeholder="粘贴多个 ASIN、Amazon 链接或混合文本">${escapeHtml(batchQueue.items.join('\n'))}</textarea><small>采集成功后自动打开下一个页面，数据和图片 URL 会保存到现有记录。</small><button data-action="start-batch">▶ 开始 / 重置队列</button>${batchQueue.active ? `<button data-action="pause-batch">${batchQueue.paused ? '▶ 继续队列' : 'Ⅱ 暂停队列'}</button>` : ''}<button data-action="stop-batch">■ 停止队列</button>${batchQueue.active ? `<p class="arc-batch-progress">${batchQueue.paused ? '已暂停：' : '正在采集：'}第 ${Math.min(batchQueue.index + 1, batchQueue.items.length)} / ${batchQueue.items.length} 个：${escapeHtml(batchQueue.items[batchQueue.index] || '已完成')}</p>` : ''}</section>
       <button class="arc-nav" data-action="toggle-section" data-target="preview"><span>本页数据预览</span><small>查看刚采集的字段</small><b>›</b></button>
       <section class="arc-panel-section" data-section="preview" ${activeSection === 'preview' ? '' : 'hidden'}><div class="arc-preview">${record ? `ASIN：${escapeHtml(record.asin)}<br>品牌：${escapeHtml(record.brand || '未读取')}<br>颜色：${escapeHtml(record.color || '未读取')}<br>父 ASIN：${escapeHtml(record.parentAsin || '未读取')}<br>星级：${escapeHtml(record.rating || '未读取')}<br>评分数量：${escapeHtml(record.reviewCount || '未读取')}<br>类目：${escapeHtml(record.categoryPath || '未读取')}<br>BSR：${escapeHtml(record.bsr || '未读取')}<br>图片：${record.imageCount || 0} 张${record.mainImageUrl ? `<br><a href="${escapeHtml(record.mainImageUrl)}" target="_blank" rel="noreferrer">打开主图（最大公开规格）</a>` : ''}` : '尚未成功读取本页数据'}</div></section>
       <button class="arc-nav" data-action="toggle-section" data-target="data"><span>导出与数据</span><small>导出、清空和历史快照</small><b>›</b></button>
@@ -523,7 +532,7 @@
       <button class="arc-nav arc-nav-secondary" data-action="toggle-section" data-target="help"><span>使用帮助</span><small>采集异常与字段说明</small><b>›</b></button>
       <section class="arc-panel-section arc-info" data-section="help" ${activeSection === 'help' ? '' : 'hidden'}><p>面板只在商品详情页显示。验证码、登录提示或 Cookie 页面无法读取。评分数量是 Amazon 显示的总评分数，可能包含未写文字的评分。</p></section>
       <button class="arc-nav arc-nav-secondary" data-action="toggle-section" data-target="changelog"><span>更新版本记录</span><small>当前 v${VERSION}</small><b>›</b></button>
-      <section class="arc-panel-section arc-info" data-section="changelog" ${activeSection === 'changelog' ? '' : 'hidden'}><p><b>当前版本 v${VERSION}</b></p><button data-action="check-update">检查更新</button><p>v1.4.10：修复父子变体自动重定向造成的队列死循环。</p><p>v1.4.09：增强颜色详情表解析，并自动将颜色加入已有用户的导出字段。</p><p>v1.4.08：新增颜色数据采集并加入导出字段。</p></section>
+      <section class="arc-panel-section arc-info" data-section="changelog" ${activeSection === 'changelog' ? '' : 'hidden'}><p><b>当前版本 v${VERSION}</b></p><button data-action="check-update">检查更新</button><p>v1.4.11：新增批量队列暂停 / 继续，暂停时不会自动刷新或跳转页面。</p><p>v1.4.10：修复父子变体自动重定向造成的队列死循环。</p><p>v1.4.09：增强颜色详情表解析，并自动将颜色加入已有用户的导出字段。</p></section>
       <button class="arc-nav arc-nav-secondary" data-action="toggle-section" data-target="support"><span>♡ 打赏 / 支持作者</span><small>自愿支持，不影响功能使用</small><b>›</b></button>
       <section class="arc-panel-section arc-info" data-section="support" ${activeSection === 'support' ? '' : 'hidden'}><p>感谢使用。本扩展所有功能均可免费使用。</p><p><b>作者联系方式</b><br><a href="mailto:qing_guo2000@outlook.com">qing_guo2000@outlook.com</a><br><a href="${feedbackMailto()}">✉ 发送反馈邮件（自动填写模板）</a><br>有任何疑问或需求可以联系。</p><p><b>支付宝打赏</b><br><span class="arc-qr-hint">请使用支付宝扫一扫</span><canvas class="arc-alipay-qr" width="196" height="196" aria-label="支付宝收款二维码"></canvas></p></section>`;
     drawAlipayQr();
@@ -542,6 +551,7 @@
       if (action === 'toggle' || (collapsed && event.target.dataset.role === 'status')) { collapsed = !collapsed; updatePanel(); return; }
       if (action === 'capture') await capture();
       if (action === 'start-batch') await startBatch();
+      if (action === 'pause-batch') await toggleBatchPause();
       if (action === 'stop-batch') await stopBatch();
       if (action === 'more') { const drawer = panel.querySelector('[data-role="drawer"]'); drawer.hidden = !drawer.hidden; if (!drawer.hidden) { activeSection = null; renderDrawer(); } }
       if (action === 'toggle-section') { const target = control.dataset.target; activeSection = activeSection === target ? null : target; renderDrawer(); }
@@ -587,6 +597,7 @@
     if (batchQueue.navigating) { batchQueue.navigating = false; await chrome.storage.local.set({ [BATCH_KEY]: batchQueue }); }
     if (batchQueue.active) chrome.runtime.sendMessage({ type: 'batch-register' }).catch(() => {});
     createPanel();
+    if (batchQueue.active && batchQueue.paused) return updatePanel('批量队列已暂停；点击“继续队列”恢复');
     if (!settings.autoCapture && !batchQueue.active) return updatePanel('自动采集已关闭；请点击“重新读取”');
     if (batchQueue.active) {
       const expected = batchQueue.items[batchQueue.index];
