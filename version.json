@@ -1,5 +1,5 @@
 {
-  "version": "1.4.11",
-  "notes": "新增批量队列暂停 / 继续；暂停时保留当前进度，不再自动刷新或跳转页面。",
+  "version": "1.4.12",
+  "notes": "修复队列输入框因面板刷新而自动清空的问题，输入内容会作为草稿保留。",
   "download": "https://github.com/guoq-prog/amazon-product-info-capture/raw/refs/heads/main/study/amazon_review_capture_extension.zip"
 }

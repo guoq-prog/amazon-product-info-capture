@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.4.11';
+  const VERSION = '1.4.12';
   const UPDATE_URL = 'https://raw.githubusercontent.com/guoq-prog/amazon-product-info-capture/main/version.json';
   // 由 alipay.jpg 以 Python 灰度阈值提取的 41×41 二维码模块；不再依赖外部 JPG。
   const ALIPAY_QR_HEX = 'fed6ad733fc168ad3a506e898a734bb753c9afa5dbaeba7302ec1411d9cd07faaaaaaafe00ca947f00121da6e89dde7c61b55b88e92219c59f22d37b4364e40baf5a4f8a0ce8f501ba156a0496b8f3982d6006a0b26c9094c700561acbada021126633900532ba7e900057a9a30400275e88cc013c147266010070fa0c7a4fe33205ef108226ed5d21b0208b7d929f3f38a6c86610611b30dea619226f601a6119854c909e2ba952fa807e6047c47f948ad2ab504c795f514ba4e8fe2f85d6822f534ae9c044843304f0deab6afe579b25db0';
@@ -24,6 +24,7 @@
   let collapsed = false;
   let lastRecord = null;
   let activeSection = null;
+  let batchDraft = '';
   let batchQueue = { active: false, paused: false, items: [], index: 0, marketplace: '', navigating: false, redirectAttempts: 0 };
 
   const cleanText = value => (value || '').replace(/\s+/g, ' ').trim();
@@ -289,6 +290,7 @@
     if (!items.length) return alert('请先粘贴至少一个有效 ASIN（每个 10 位）');
     const site = document.querySelector('[data-batch-site]')?.value || marketplace();
     if (!siteOptions.includes(site)) return alert('请选择有效的 Amazon 站点');
+    batchDraft = items.join('\n');
     batchQueue = { active: true, paused: false, items, index: 0, marketplace: site, navigating: false, redirectAttempts: 0 };
     await saveAll();
     const current = getAsin();
@@ -301,6 +303,7 @@
 
   async function stopBatch() {
     batchQueue = { active: false, paused: false, items: [], index: 0, marketplace: '', navigating: false, redirectAttempts: 0 };
+    batchDraft = '';
     await saveAll();
     updatePanel('批量队列已停止');
   }
@@ -506,11 +509,13 @@
   function renderDrawer() {
     const drawer = document.querySelector(`#${PANEL_ID} [data-role="drawer"]`);
     if (!drawer) return;
+    const existingBatchInput = drawer.querySelector('[data-batch-input]');
+    if (existingBatchInput) batchDraft = existingBatchInput.value;
     const record = lastRecord || collect();
     drawer.innerHTML = `
       <div class="arc-section-title">常用</div>
       <button class="arc-nav" data-action="toggle-section" data-target="batch"><span>批量采集队列</span><small>${batchQueue.active ? `进行中：${Math.min(batchQueue.index + 1, batchQueue.items.length)} / ${batchQueue.items.length}` : '一次输入多个 ASIN，自动逐页采集'}</small><b>›</b></button>
-      <section class="arc-panel-section" data-section="batch" ${activeSection === 'batch' ? '' : 'hidden'}><label>目标站点 <select data-batch-site>${siteOptions.map(site => `<option value="${site}" ${(batchQueue.marketplace || marketplace()) === site ? 'selected' : ''}>${site}</option>`).join('')}</select></label><textarea data-batch-input rows="5" placeholder="粘贴多个 ASIN、Amazon 链接或混合文本">${escapeHtml(batchQueue.items.join('\n'))}</textarea><small>采集成功后自动打开下一个页面，数据和图片 URL 会保存到现有记录。</small><button data-action="start-batch">▶ 开始 / 重置队列</button>${batchQueue.active ? `<button data-action="pause-batch">${batchQueue.paused ? '▶ 继续队列' : 'Ⅱ 暂停队列'}</button>` : ''}<button data-action="stop-batch">■ 停止队列</button>${batchQueue.active ? `<p class="arc-batch-progress">${batchQueue.paused ? '已暂停：' : '正在采集：'}第 ${Math.min(batchQueue.index + 1, batchQueue.items.length)} / ${batchQueue.items.length} 个：${escapeHtml(batchQueue.items[batchQueue.index] || '已完成')}</p>` : ''}</section>
+      <section class="arc-panel-section" data-section="batch" ${activeSection === 'batch' ? '' : 'hidden'}><label>目标站点 <select data-batch-site>${siteOptions.map(site => `<option value="${site}" ${(batchQueue.marketplace || marketplace()) === site ? 'selected' : ''}>${site}</option>`).join('')}</select></label><textarea data-batch-input rows="5" placeholder="粘贴多个 ASIN、Amazon 链接或混合文本">${escapeHtml(batchDraft || batchQueue.items.join('\n'))}</textarea><small>采集成功后自动打开下一个页面，数据和图片 URL 会保存到现有记录。</small><button data-action="start-batch">▶ 开始 / 重置队列</button>${batchQueue.active ? `<button data-action="pause-batch">${batchQueue.paused ? '▶ 继续队列' : 'Ⅱ 暂停队列'}</button>` : ''}<button data-action="stop-batch">■ 停止队列</button>${batchQueue.active ? `<p class="arc-batch-progress">${batchQueue.paused ? '已暂停：' : '正在采集：'}第 ${Math.min(batchQueue.index + 1, batchQueue.items.length)} / ${batchQueue.items.length} 个：${escapeHtml(batchQueue.items[batchQueue.index] || '已完成')}</p>` : ''}</section>
       <button class="arc-nav" data-action="toggle-section" data-target="preview"><span>本页数据预览</span><small>查看刚采集的字段</small><b>›</b></button>
       <section class="arc-panel-section" data-section="preview" ${activeSection === 'preview' ? '' : 'hidden'}><div class="arc-preview">${record ? `ASIN：${escapeHtml(record.asin)}<br>品牌：${escapeHtml(record.brand || '未读取')}<br>颜色：${escapeHtml(record.color || '未读取')}<br>父 ASIN：${escapeHtml(record.parentAsin || '未读取')}<br>星级：${escapeHtml(record.rating || '未读取')}<br>评分数量：${escapeHtml(record.reviewCount || '未读取')}<br>类目：${escapeHtml(record.categoryPath || '未读取')}<br>BSR：${escapeHtml(record.bsr || '未读取')}<br>图片：${record.imageCount || 0} 张${record.mainImageUrl ? `<br><a href="${escapeHtml(record.mainImageUrl)}" target="_blank" rel="noreferrer">打开主图（最大公开规格）</a>` : ''}` : '尚未成功读取本页数据'}</div></section>
       <button class="arc-nav" data-action="toggle-section" data-target="data"><span>导出与数据</span><small>导出、清空和历史快照</small><b>›</b></button>
@@ -594,6 +599,7 @@
     settings = { ...defaultSettings, ...stored[SETTINGS_KEY] };
     if (Array.isArray(settings.selectedExportFields) && !settings.selectedExportFields.includes('color')) settings.selectedExportFields = [...settings.selectedExportFields, 'color'];
     batchQueue = { ...batchQueue, ...(stored[BATCH_KEY] || {}) };
+    batchDraft = batchQueue.items?.join('\n') || '';
     if (batchQueue.navigating) { batchQueue.navigating = false; await chrome.storage.local.set({ [BATCH_KEY]: batchQueue }); }
     if (batchQueue.active) chrome.runtime.sendMessage({ type: 'batch-register' }).catch(() => {});
     createPanel();
